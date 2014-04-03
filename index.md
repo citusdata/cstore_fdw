@@ -107,7 +107,7 @@ Learn more about the [Optimized Row Column (ORC) file format][ORC] , which influ
 
 [column-oriented]: http://en.wikipedia.org/w/index.php?oldid=598438648
 [citus]: http://citusdata.com/
-[cstore blog]: http://citusdata.com/blog
+[cstore blog]: http://www.citusdata.com/blog/76-postgresql-columnar-store-for-analytics
 [fdw]: http://www.postgresql.org/docs/current/static/fdwhandler.html
 [pg_lzcompress]: http://www.postgresql.org/docs/current/static/storage-toast.html
 [ORC]: https://cwiki.apache.org/confluence/pages/viewpage.action?pageId=31818911
