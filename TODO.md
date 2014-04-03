@@ -7,8 +7,8 @@ Requested Features
 * Improve memory usage
 * Add checksum logic
 * Add new compression methods
-* Enable ALTER TABLE ADD COLUMN
-* Enable ALTER TABLE DROP COLUMN
+* Enable ALTER FOREIGN TABLE ADD COLUMN
+* Enable ALTER FOREIGN TABLE DROP COLUMN
 * Enable users other than superuser to safely create columnar tables (permissions)
 * Transactional semantics
 * Add config setting to make pg_fsync() optional
@@ -36,5 +36,7 @@ Known Issues
   by default.
 * We don't yet incorporate the compression method's impact on disk I/O into cost
   estimates.
+* During CREATE FOREIGN TABLE, we don't check if we have access to the given 
+  filename's directory path.
 * If CitusDB applies a broadcast table join, and if the columnar table is one of
   the smaller tables, we error out.

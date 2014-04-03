@@ -98,9 +98,6 @@ files.
     gzip -d customer_reviews_1998.csv.gz
     gzip -d customer_reviews_1999.csv.gz
 
-Next, make sure that you have added cstore\_fdw to ```shared_preload_libraries```
-in your ```postgresql.conf``` and restarted Postgres.
-
 Then, let's log into Postgres, and run the following commands to create a column
 store foreign table:
 
@@ -132,8 +129,8 @@ store foreign table:
 
 Next, we load data into the table:
 
-    COPY customer_reviews FROM '/home/citusdata/customer_reviews_1998.csv' WITH CSV;
-    COPY customer_reviews FROM '/home/citusdata/customer_reviews_1999.csv' WITH CSV;
+    COPY customer_reviews FROM '/home/user/customer_reviews_1998.csv' WITH CSV;
+    COPY customer_reviews FROM '/home/user/customer_reviews_1999.csv' WITH CSV;
 
 **Note:** If you are getting ```ERROR: cannot copy to foreign table
 "customer_reviews"``` when trying to run the COPY commands, double check that you
