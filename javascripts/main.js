@@ -90,9 +90,30 @@ $(function() {
 
     $event.preventDefault();
 
-    console.log("HI");
     $('body').scrollTo(dest, 500);
 
     return false;
   });
+
+  var $button = $('button[name=scroll][value=top]');
+  var $content = $('h1#toc_1');
+
+  $button.click(function($event) {
+    $event.preventDefault();
+
+    $('body').scrollTo(0, 250);
+
+    return false;
+  });
+
+  var updateButton = function($event) {
+    if($(window).scrollTop() > ($content.offset().top - 20)) {
+      $button.prop('disabled', false);
+    } else {
+      $button.prop('disabled', true);
+    }
+  };
+
+
+  $(window).scroll(_.throttle(updateButton, 100));
 });

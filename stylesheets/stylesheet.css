@@ -503,3 +503,34 @@ figure.chart {
   color: #fff !important;
   background: #245485;
 }
+
+button[name=scroll][value=top] {
+  height: 30px;
+  opacity: 1;
+  overflow: hidden;
+
+  position: fixed;
+  bottom:0px;
+  right:0px;
+  margin: 0px 20px 0px 0px;
+  border:0px;
+  background-color: #245485;
+  color:white;
+  padding:10px;
+  border-radius: 7px 7px 0px 0px;
+  box-shadow: rgba(127, 127, 127, 0.7) 0px 0px 20px;
+  cursor: pointer;
+
+  transition: opacity 0.3s;
+}
+
+button[name=scroll][value=top]:active {
+  box-shadow: rgba(127, 127, 127, 0.7) 0px 0px 18px;
+  padding-bottom: 8px;
+}
+
+button[name=scroll][value=top]:disabled {
+  height: 0px;
+  opacity: 0;
+  transition: height 0s linear 0.25s, opacity 0.15s;
+}
