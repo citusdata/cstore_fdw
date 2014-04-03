@@ -1,0 +1,41 @@
+# =====
+# = C =
+# =====
+
+# Object files
+*.o
+*.ko
+*.obj
+*.elf
+
+# Libraries
+*.lib
+*.a
+
+# Shared objects (inc. Windows DLLs)
+*.dll
+*.so
+*.so.*
+*.dylib
+
+# Executables
+*.exe
+*.out
+*.app
+*.i*86
+*.x86_64
+*.hex
+
+# ====================
+# = Project-Specific =
+# ====================
+
+/data/*.cstore
+/data/*.footer
+
+/sql/block_filtering.sql
+/sql/create.sql
+/sql/data_types.sql
+/sql/load.sql
+
+*.pb-c.*
