@@ -1,0 +1,10 @@
+ga_tracking_id: UA-32858865-2
+markdown: redcarpet
+pygments: true
+redcarpet:
+  input: GFM
+  extensions:
+    - smart
+    - fenced_code_blocks
+    - with_toc_data
+    - tables

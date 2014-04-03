@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset='utf-8'>
+    <meta http-equiv="X-UA-Compatible" content="chrome=1">
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
+    <link rel="shortcut icon" href="images/favicon.ico" />
+    <link rel="stylesheet" type="text/css" href="stylesheets/stylesheet.css" media="screen" />
+    <link rel="stylesheet" type="text/css" href="stylesheets/pygment_trac.css" media="screen" />
+    <link rel="stylesheet" type="text/css" href="stylesheets/print.css" media="print" />
+
+    <!--[if lt IE 9]>
+    <script src="//html5shiv.googlecode.com/svn/trunk/html5.js"></script>
+    <![endif]-->
+
+    <title>{{page.title}}</title>
+  </head>
+
+  <body>
+    <header>
+      <div class="inner">
+        <h1>{{page.title}}</h1>
+        <h2>{{page.tagline}}</h2>
+        <a href="{{site.github.repository_url}}" class="button"><small>View project on&nbsp;</small>GitHub</a>
+      </div>
+    </header>
+
+    <div id="content-wrapper">
+      <div class="inner clearfix">
+        <section id="main-content">
+          {{content}}
+        </section>
+
+        <aside id="sidebar">
+          <a href="{{page.zip_url}}" class="button">
+            <small>Download</small>
+            .zip file
+          </a>
+          <a href="{{page.tar_url}}" class="button">
+            <small>Download</small>
+            .tar.gz file
+          </a>
+
+          <p class="repo-owner"><a href="{{site.github.repository_url}}">{{site.github.repository_name}}</a> is maintained by <a href="{{site.github.owner_url}}">{{site.github.owner_name}}</a></p>
+
+          <p>This page's theme is based on the Architect theme by <a href="https://twitter.com/jasonlong">Jason Long</a></p>
+        </aside>
+      </div>
+    </div>
+
+    <script src="//ajax.googleapis.com/ajax/libs/jquery/1.11.0/jquery.min.js"></script>
+    <script src="javascripts/jquery.scrollTo-1.4.11/jquery.scrollTo.min.js"></script>
+    <script src="javascripts/Highcharts-3.0.10/highcharts.js"></script>
+    <script src="javascripts/main.js"></script>
+
+    <script>
+      (function(i,s,o,g,r,a,m){i['GoogleAnalyticsObject']=r;i[r]=i[r]||function(){
+      (i[r].q=i[r].q||[]).push(arguments)},i[r].l=1*new Date();a=s.createElement(o),
+      m=s.getElementsByTagName(o)[0];a.async=1;a.src=g;m.parentNode.insertBefore(a,m)
+      })(window,document,'script','//www.google-analytics.com/analytics.js','ga');
+
+      ga('create', '{{site.ga_tracking_id}}', 'citusdata.github.io');
+      ga('send', 'pageview');
+
+    </script>
+
+  </body>
+</html>
