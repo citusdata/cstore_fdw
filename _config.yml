@@ -4,7 +4,8 @@ pygments: true
 redcarpet:
   input: GFM
   extensions:
-    - smart
+    - autolink
     - fenced_code_blocks
-    - with_toc_data
+    - smart
     - tables
+    - with_toc_data
