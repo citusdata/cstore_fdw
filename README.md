@@ -182,3 +182,5 @@ Apache v2.0 License.
 
 For all types of questions and comments about the wrapper, please contact us at
 engage @ citusdata.com.
+
+[status]: https://travis-ci.org/citusdata/cstore_fdw
