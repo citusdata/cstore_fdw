@@ -9,6 +9,7 @@ Requested Features
 * Add new compression methods
 * Enable ALTER FOREIGN TABLE ADD COLUMN
 * Enable ALTER FOREIGN TABLE DROP COLUMN
+* Enable INSERT/DELETE/UPDATE
 * Enable users other than superuser to safely create columnar tables (permissions)
 * Transactional semantics
 * Add config setting to make pg_fsync() optional

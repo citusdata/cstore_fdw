@@ -90,6 +90,12 @@ You can use PostgreSQL's ```ANALYZE table_name``` command to collect statistics
 about the table. These statistics help the query planner to help determine the
 most efficient execution plan for each query.
 
+** Note. ** We currently don't support updating table using INSERT, DELETE, and
+UPDATE commands.
+
+Example
+-------
+
 As an example, we demonstrate loading and querying data to/from a column store
 table from scratch here. Let's start with downloading and decompressing the data
 files.
