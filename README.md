@@ -90,7 +90,7 @@ You can use PostgreSQL's ```ANALYZE table_name``` command to collect statistics
 about the table. These statistics help the query planner to help determine the
 most efficient execution plan for each query.
 
-** Note. ** We currently don't support updating table using INSERT, DELETE, and
+**Note.** We currently don't support updating table using INSERT, DELETE, and
 UPDATE commands.
 
 Example
@@ -140,7 +140,7 @@ Next, we load data into the table:
     COPY customer_reviews FROM '/home/user/customer_reviews_1998.csv' WITH CSV;
     COPY customer_reviews FROM '/home/user/customer_reviews_1999.csv' WITH CSV;
 
-**Note:** If you are getting ```ERROR: cannot copy to foreign table
+**Note.** If you are getting ```ERROR: cannot copy to foreign table
 "customer_reviews"``` when trying to run the COPY commands, double check that you
 have added cstore\_fdw to ```shared_preload_libraries``` in ```postgresql.conf```
 and restarted Postgres.
