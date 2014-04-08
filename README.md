@@ -2,6 +2,7 @@ cstore_fdw
 ==========
 
 [![Build Status](http://img.shields.io/travis/citusdata/cstore_fdw/master.svg)][status]
+[![Coverage](http://img.shields.io/coveralls/citusdata/cstore_fdw/master.svg)][coverage]
 
 This extension implements a columnar store for PostgreSQL. Columnar stores
 provide notable benefits for analytic use-cases where data is loaded in batches.
@@ -190,3 +191,4 @@ For all types of questions and comments about the wrapper, please contact us at
 engage @ citusdata.com.
 
 [status]: https://travis-ci.org/citusdata/cstore_fdw
+[coverage]: https://coveralls.io/r/citusdata/cstore_fdw
