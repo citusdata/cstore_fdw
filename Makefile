@@ -19,6 +19,12 @@ EXTRA_CLEAN = cstore.pb-c.h cstore.pb-c.c data/*.cstore data/*.cstore.footer \
               expected/block_filtering.out expected/create.out expected/data_types.out \
               expected/load.out
 
+ifeq ($(enable_coverage),yes)
+	PG_CPPFLAGS += --coverage
+	SHLIB_LINK  += --coverage
+	EXTRA_CLEAN += *.gcno
+endif
+
 #
 # Users need to specify their Postgres installation path through pg_config. For
 # example: /usr/local/pgsql/bin/pg_config or /usr/lib/postgresql/9.3/bin/pg_config
