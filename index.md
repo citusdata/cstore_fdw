@@ -97,6 +97,8 @@ SELECT * FROM cstore_table c, plain_table p WHERE c.name=p.name;
 
 # Community
 
+Join the [cstore users Google Group][cstore-users].
+
 Full integration with rich PostgreSQL ecosystem:
 
   * Compatible with all existing PostgreSQL [data types][]
@@ -118,3 +120,4 @@ Learn more about the [Optimized Row Column (ORC) file format][ORC] , which influ
 [hstore]: http://www.postgresql.org/docs/current/static/hstore.html
 [json]: http://www.postgresql.org/docs/current/static/datatype-json.html
 [hll]: https://github.com/aggregateknowledge/postgresql-hll
+[cstore-users]: https://groups.google.com/forum/#!forum/cstore-users
