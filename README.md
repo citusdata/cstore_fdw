@@ -136,6 +136,8 @@ store foreign table:
     OPTIONS(filename '/usr/local/pgsql/cstore/customer_reviews.cstore',
             compression 'pglz');
 
+**Note.** Make sure that you have created and set the permissions for the directory where you are storing the cstore files (In this case, it is ```/usr/local/pgsql/cstore/```).
+
 Next, we load data into the table:
 
     COPY customer_reviews FROM '/home/user/customer_reviews_1998.csv' WITH CSV;
