@@ -177,6 +177,60 @@ Finally, let's run some example SQL queries on the column store table.
     ORDER BY
         title_length_bucket;
 
+Example with CitusDB
+--------------------
+
+The example above illustrated how to load data into a PostgreSQL database running on a single
+host. However, sometimes your data is too large to analyze effectively on a single host.
+CitusDB is a product built by Citus Data that allows you to run a distributed PostgreSQL
+database to analyze your data using the power of multiple hosts. CitusDB is based on a 
+modern PostgreSQL version and allows you to easily install PostgreSQL extensions and 
+foreign data wrappers, including cstore_fdw.
+
+In order to use cstore_fdw with CitusDB we will first need to install cstore_fdw on all 
+nodes in the CitusDB cluster by following the instructions in the [Building](#building) 
+section above.
+
+Next, we will create a distributed version of the ```customer_reviews``` table from the 
+previous example. To do this we run the following on the CitusDB master node:
+
+    -- load extension first time after install
+    CREATE EXTENSION cstore_fdw;
+
+    -- create server object
+    CREATE SERVER cstore_server FOREIGN DATA WRAPPER cstore_fdw;
+
+    -- create foreign table
+    CREATE FOREIGN TABLE customer_reviews
+    (
+        customer_id TEXT,
+        review_date DATE,
+        review_rating INTEGER,
+        review_votes INTEGER,
+        review_helpful_votes INTEGER,
+        product_id CHAR(10),
+        product_title TEXT,
+        product_sales_rank BIGINT,
+        product_group TEXT,
+        product_category TEXT,
+        product_subcategory TEXT,
+        similar_product_ids CHAR(10)[]
+    )
+    DISTRIBUTE BY APPEND(customer_reviews)
+    SERVER cstore_server
+    OPTIONS(filename '', compression 'pglz');
+
+CitusDB will manage creating the extension on worker nodes and choosing a filename to
+store the table data. We can now load data into CitusDB as we typically would using 
+the ```\STAGE``` command:
+
+    \STAGE customer_reviews FROM '/home/user/customer_reviews_1998.csv' WITH CSV;
+    \STAGE customer_reviews FROM '/home/user/customer_reviews_1999.csv' WITH CSV;
+
+We can now query the distributed ```customer_reviews``` table using standard SQL.
+
+The example above assumes some base knowledge about CitusDB. To learn about CitusDB 
+please see our [documentation][citus-documentation].
 
 Copyright
 ---------
@@ -190,3 +244,4 @@ For all types of questions and comments about the wrapper, please contact us at
 engage @ citusdata.com.
 
 [status]: https://travis-ci.org/citusdata/cstore_fdw
+[citus-documentation]: http://citusdata.com/docs
