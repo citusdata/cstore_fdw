@@ -2,6 +2,7 @@ cstore_fdw
 ==========
 
 [![Build Status](http://img.shields.io/travis/citusdata/cstore_fdw/master.svg)][status]
+[![Coverage](http://img.shields.io/coveralls/citusdata/cstore_fdw/master.svg)][coverage]
 
 This extension implements a columnar store for PostgreSQL. Columnar stores
 provide notable benefits for analytic use-cases where data is loaded in batches.
@@ -137,6 +138,8 @@ OPTIONS(filename '/usr/local/pgsql/cstore/customer_reviews.cstore',
         compression 'pglz');
 ```
 
+**Note.** Make sure that you have created and set the permissions for the directory where you are storing the cstore files (In this case, it is ```/usr/local/pgsql/cstore/```).
+
 Next, we load data into the table:
 
 ```SQL
@@ -257,3 +260,4 @@ engage @ citusdata.com.
 
 [status]: https://travis-ci.org/citusdata/cstore_fdw
 [citus-documentation]: http://citusdata.com/docs
+[coverage]: https://coveralls.io/r/citusdata/cstore_fdw

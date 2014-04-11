@@ -26,6 +26,16 @@
 *.x86_64
 *.hex
 
+# ========
+# = Gcov =
+# ========
+
+# gcc coverage testing tool files
+
+*.gcno
+*.gcda
+*.gcov
+
 # ====================
 # = Project-Specific =
 # ====================
