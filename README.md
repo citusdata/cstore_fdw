@@ -110,38 +110,42 @@ files.
 Then, let's log into Postgres, and run the following commands to create a column
 store foreign table:
 
-    -- load extension first time after install
-    CREATE EXTENSION cstore_fdw;
+```SQL
+-- load extension first time after install
+CREATE EXTENSION cstore_fdw;
 
-    -- create server object
-    CREATE SERVER cstore_server FOREIGN DATA WRAPPER cstore_fdw;
+-- create server object
+CREATE SERVER cstore_server FOREIGN DATA WRAPPER cstore_fdw;
 
-    -- create foreign table
-    CREATE FOREIGN TABLE customer_reviews
-    (
-        customer_id TEXT,
-        review_date DATE,
-        review_rating INTEGER,
-        review_votes INTEGER,
-        review_helpful_votes INTEGER,
-        product_id CHAR(10),
-        product_title TEXT,
-        product_sales_rank BIGINT,
-        product_group TEXT,
-        product_category TEXT,
-        product_subcategory TEXT,
-        similar_product_ids CHAR(10)[]
-    )
-    SERVER cstore_server
-    OPTIONS(filename '/usr/local/pgsql/cstore/customer_reviews.cstore',
-            compression 'pglz');
+-- create foreign table
+CREATE FOREIGN TABLE customer_reviews
+(
+    customer_id TEXT,
+    review_date DATE,
+    review_rating INTEGER,
+    review_votes INTEGER,
+    review_helpful_votes INTEGER,
+    product_id CHAR(10),
+    product_title TEXT,
+    product_sales_rank BIGINT,
+    product_group TEXT,
+    product_category TEXT,
+    product_subcategory TEXT,
+    similar_product_ids CHAR(10)[]
+)
+SERVER cstore_server
+OPTIONS(filename '/usr/local/pgsql/cstore/customer_reviews.cstore',
+        compression 'pglz');
+```
 
 **Note.** Make sure that you have created and set the permissions for the directory where you are storing the cstore files (In this case, it is ```/usr/local/pgsql/cstore/```).
 
 Next, we load data into the table:
 
-    COPY customer_reviews FROM '/home/user/customer_reviews_1998.csv' WITH CSV;
-    COPY customer_reviews FROM '/home/user/customer_reviews_1999.csv' WITH CSV;
+```SQL
+COPY customer_reviews FROM '/home/user/customer_reviews_1998.csv' WITH CSV;
+COPY customer_reviews FROM '/home/user/customer_reviews_1999.csv' WITH CSV;
+```
 
 **Note.** If you are getting ```ERROR: cannot copy to foreign table
 "customer_reviews"``` when trying to run the COPY commands, double check that you
@@ -151,35 +155,97 @@ and restarted Postgres.
 Next, we collect data distribution statistics about the table. This is optional,
 but usually very helpful:
 
-    ANALYZE customer_reviews;
+```SQL
+ANALYZE customer_reviews;
+```
 
 Finally, let's run some example SQL queries on the column store table.
 
-    -- Find all reviews a particular customer made on the Dune series in 1998.
-    SELECT
-        customer_id, review_date, review_rating, product_id, product_title
-    FROM
-        customer_reviews
-    WHERE
-        customer_id ='A27T7HVDXA3K2A' AND
-        product_title LIKE '%Dune%' AND
-        review_date >= '1998-01-01' AND
-        review_date <= '1998-12-31';
+```SQL
+-- Find all reviews a particular customer made on the Dune series in 1998.
+SELECT
+    customer_id, review_date, review_rating, product_id, product_title
+FROM
+    customer_reviews
+WHERE
+    customer_id ='A27T7HVDXA3K2A' AND
+    product_title LIKE '%Dune%' AND
+    review_date >= '1998-01-01' AND
+    review_date <= '1998-12-31';
 
-    -- Do we have a correlation between a book's title's length and its review ratings?
-    SELECT
-        width_bucket(length(product_title), 1, 50, 5) title_length_bucket,
-        round(avg(review_rating), 2) AS review_average,
-        count(*)
-    FROM
-       customer_reviews
-    WHERE
-        product_group = 'Book'
-    GROUP BY
-        title_length_bucket
-    ORDER BY
-        title_length_bucket;
+-- Do we have a correlation between a book's title's length and its review ratings?
+SELECT
+    width_bucket(length(product_title), 1, 50, 5) title_length_bucket,
+    round(avg(review_rating), 2) AS review_average,
+    count(*)
+FROM
+   customer_reviews
+WHERE
+    product_group = 'Book'
+GROUP BY
+    title_length_bucket
+ORDER BY
+    title_length_bucket;
+```
 
+Example with CitusDB
+--------------------
+
+The example above illustrated how to load data into a PostgreSQL database running on a single
+host. However, sometimes your data is too large to analyze effectively on a single host.
+CitusDB is a product built by Citus Data that allows you to run a distributed PostgreSQL
+database to analyze your data using the power of multiple hosts. CitusDB is based on a 
+modern PostgreSQL version and allows you to easily install PostgreSQL extensions and 
+foreign data wrappers, including cstore_fdw.
+
+In order to use cstore_fdw with CitusDB we will first need to install cstore_fdw on all 
+nodes in the CitusDB cluster by following the instructions in the [Building](#building) 
+section above.
+
+Next, we will create a distributed version of the ```customer_reviews``` table from the 
+previous example. To do this we run the following on the CitusDB master node:
+
+```SQL
+-- load extension first time after install
+CREATE EXTENSION cstore_fdw;
+
+-- create server object
+CREATE SERVER cstore_server FOREIGN DATA WRAPPER cstore_fdw;
+
+-- create foreign table
+CREATE FOREIGN TABLE customer_reviews
+(
+    customer_id TEXT,
+    review_date DATE,
+    review_rating INTEGER,
+    review_votes INTEGER,
+    review_helpful_votes INTEGER,
+    product_id CHAR(10),
+    product_title TEXT,
+    product_sales_rank BIGINT,
+    product_group TEXT,
+    product_category TEXT,
+    product_subcategory TEXT,
+    similar_product_ids CHAR(10)[]
+)
+DISTRIBUTE BY APPEND(customer_reviews)
+SERVER cstore_server
+OPTIONS(filename '', compression 'pglz');
+```
+
+CitusDB will manage creating the extension on worker nodes and choosing a filename to
+store the table data. We can now load data into CitusDB as we typically would using 
+the ```\STAGE``` command:
+
+```SQL
+\STAGE customer_reviews FROM '/home/user/customer_reviews_1998.csv' WITH CSV;
+\STAGE customer_reviews FROM '/home/user/customer_reviews_1999.csv' WITH CSV;
+```
+
+We can now query the distributed ```customer_reviews``` table using standard SQL.
+
+The example above assumes some base knowledge about CitusDB. To learn about CitusDB 
+please see our [documentation][citus-documentation].
 
 Copyright
 ---------
@@ -193,4 +259,5 @@ For all types of questions and comments about the wrapper, please contact us at
 engage @ citusdata.com.
 
 [status]: https://travis-ci.org/citusdata/cstore_fdw
+[citus-documentation]: http://citusdata.com/docs
 [coverage]: https://coveralls.io/r/citusdata/cstore_fdw
