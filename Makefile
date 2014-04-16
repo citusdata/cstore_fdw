@@ -34,6 +34,14 @@ PG_CONFIG = pg_config
 PGXS := $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
 
+ifndef MAJORVERSION
+    MAJORVERSION := $(basename $(VERSION))
+endif
+
+ifeq (,$(findstring $(MAJORVERSION), 9.3 9.4))
+    $(error PostgreSQL 9.3 or 9.4 is required to compile this extension)
+endif
+
 cstore.pb-c.c: cstore.proto
 	protoc-c --c_out=. cstore.proto
 
