@@ -162,11 +162,11 @@ CStoreProcessUtility(Node *parseTree, const char *queryString,
 		standard_ProcessUtility(parseTree, queryString, context, paramListInfo,
 								destReceiver, completionTag);
 	}
-	
+
 	if (nodeTag(parseTree) == T_CreateForeignServerStmt)
 	{
 		CreateForeignServerStmt *serverStatement = (CreateForeignServerStmt *) parseTree;
-	
+
 		char *foreignWrapperName = serverStatement->fdwname;
 		if (strncmp(foreignWrapperName, CSTORE_FDW_NAME, NAMEDATALEN) == 0)
 		{
@@ -337,11 +337,11 @@ CreateCStoreDatabaseDirectory(Oid databaseOid)
 {
 	StringInfo cstoreDirectoryPath = makeStringInfo();
 	appendStringInfo(cstoreDirectoryPath, "%s/cstore_fdw/%u", DataDir, databaseOid);
-	
+
 	if (pg_mkdir_p(cstoreDirectoryPath->data, S_IRWXU) < 0)
 	{
 		ereport(ERROR, (errcode_for_file_access(),
-		 				errmsg("could not create directory \"%s\": %m",
+						errmsg("could not create directory \"%s\": %m",
 						cstoreDirectoryPath->data)));
 	}
 }
@@ -520,7 +520,7 @@ CStoreGetOptions(Oid foreignTableId)
 	{
 		blockRowCount = pg_atoi(blockRowCountString, sizeof(int32), 0);
 	}
-	
+
 	/* set default filename if it is not provided */
 	if (filename == NULL)
 	{
@@ -635,15 +635,15 @@ ValidateForeignTableOptions(char *filename, char *compressionTypeString,
 static char *
 CStoreFilePath(RelFileNode relationFileNode)
 {
-    StringInfo cstoreFilePath = NULL;
-    Oid databaseOid = relationFileNode.dbNode;
-    Oid relationFileOid = relationFileNode.relNode;
+	StringInfo cstoreFilePath = NULL;
+	Oid databaseOid = relationFileNode.dbNode;
+	Oid relationFileOid = relationFileNode.relNode;
 
-    cstoreFilePath = makeStringInfo();
-    appendStringInfo(cstoreFilePath, "%s/cstore_fdw/%u/%u", DataDir, databaseOid,
-             		 relationFileOid);
+	cstoreFilePath = makeStringInfo();
+	appendStringInfo(cstoreFilePath, "%s/cstore_fdw/%u/%u", DataDir, databaseOid,
+					 relationFileOid);
 
-    return cstoreFilePath->data;
+	return cstoreFilePath->data;
 }
 
 
