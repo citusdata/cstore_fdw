@@ -14,9 +14,6 @@ CREATE FOREIGN TABLE test_validator_invalid_option ()
 	SERVER cstore_server 
 	OPTIONS(filename 'data.cstore', bad_option_name '1'); -- ERROR
 
-CREATE FOREIGN TABLE test_validator_filename_missing () 
-	SERVER cstore_server; -- ERROR
-
 CREATE FOREIGN TABLE test_validator_invalid_stripe_row_count () 
 	SERVER cstore_server
 	OPTIONS(filename 'data.cstore', stripe_row_count '0'); -- ERROR
@@ -40,5 +37,4 @@ CREATE FOREIGN TABLE contestant (handle TEXT, birthdate DATE, rating INT,
 CREATE FOREIGN TABLE contestant_compressed (handle TEXT, birthdate DATE, rating INT,
 	percentile FLOAT, country CHAR(3), achievements TEXT[])
 	SERVER cstore_server
-	OPTIONS(filename '@abs_srcdir@/data/contestant_compressed.cstore',
-			compression 'pglz');
+	OPTIONS(compression 'pglz');
