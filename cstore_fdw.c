@@ -53,13 +53,15 @@ static bool CStoreTable(RangeVar *rangeVar);
 static uint64 CopyIntoCStoreTable(const CopyStmt *copyStatement,
 								  const char *queryString);
 static void CreateCStoreDatabaseDirectory(Oid databaseOid);
+static bool DirectoryExists(StringInfo directoryName);
+static void CreateDirectory(StringInfo directoryName);
 static StringInfo OptionNamesString(Oid currentContextId);
 static CStoreFdwOptions * CStoreGetOptions(Oid foreignTableId);
 static char * CStoreGetOptionValue(Oid foreignTableId, const char *optionName);
 static void ValidateForeignTableOptions(char *filename, char *compressionTypeString,
 										char *stripeRowCountString,
 										char *blockRowCountString);
-static char * CStoreFilePath(RelFileNode relationFileNode);
+static char * CStoreDefaultFilePath(Oid foreignTableId);
 static CompressionType ParseCompressionType(const char *compressionTypeString);
 static void CStoreGetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel,
 									Oid foreignTableId);
@@ -327,22 +329,85 @@ CopyIntoCStoreTable(const CopyStmt *copyStatement, const char *queryString)
 }
 
 
-/* 
+/*
  * CreateCStoreDatabaseDirectory creates the directory (and parent directories,
  * if needed) used to store automatically managed cstore_fdw files. The path to
  * the directory is $PGDATA/cstore_fdw/{databaseOid}.
- */ 
+ */
 static void
 CreateCStoreDatabaseDirectory(Oid databaseOid)
 {
-	StringInfo cstoreDirectoryPath = makeStringInfo();
-	appendStringInfo(cstoreDirectoryPath, "%s/cstore_fdw/%u", DataDir, databaseOid);
+	bool cstoreDirectoryExists = false;
+	bool databaseDirectoryExists = false;
+	StringInfo cstoreDatabaseDirectoryPath = NULL;
 
-	if (pg_mkdir_p(cstoreDirectoryPath->data, S_IRWXU) < 0)
+	StringInfo cstoreDirectoryPath = makeStringInfo();
+	appendStringInfo(cstoreDirectoryPath, "%s/%s", DataDir, CSTORE_FDW_NAME);
+
+	cstoreDirectoryExists = DirectoryExists(cstoreDirectoryPath);
+	if (!cstoreDirectoryExists)
+	{
+		CreateDirectory(cstoreDirectoryPath);
+	}
+
+	cstoreDatabaseDirectoryPath = makeStringInfo();
+	appendStringInfo(cstoreDatabaseDirectoryPath, "%s/%s/%u", DataDir,
+					 CSTORE_FDW_NAME, databaseOid);
+
+	databaseDirectoryExists = DirectoryExists(cstoreDatabaseDirectoryPath);
+	if (!databaseDirectoryExists)
+	{
+		CreateDirectory(cstoreDatabaseDirectoryPath);
+	}
+}
+
+
+/* DirectoryExists checks if a directory exists for the given directory name. */
+static bool
+DirectoryExists(StringInfo directoryName)
+{
+	bool directoryExists = true;
+	struct stat directoryStat;
+
+	int statOK = stat(directoryName->data, &directoryStat);
+	if (statOK == 0)
+	{
+		/* file already exists; check that it is a directory */
+		if (!S_ISDIR(directoryStat.st_mode))
+		{
+			ereport(ERROR, (errmsg("\"%s\" is not a directory", directoryName->data),
+							errhint("You need to remove or rename the file \"%s\".",
+									directoryName->data)));
+		}
+	}
+	else
+	{
+		if (errno == ENOENT)
+		{
+			directoryExists = false;
+		}
+		else
+		{
+			ereport(ERROR, (errcode_for_file_access(),
+							errmsg("could not stat directory \"%s\": %m",
+								   directoryName->data)));
+		}
+	}
+
+	return directoryExists;
+}
+
+
+/* CreateDirectory creates a new directory with the given directory name. */
+static void
+CreateDirectory(StringInfo directoryName)
+{
+	int makeOK = mkdir(directoryName->data, S_IRWXU);
+	if (makeOK != 0)
 	{
 		ereport(ERROR, (errcode_for_file_access(),
 						errmsg("could not create directory \"%s\": %m",
-						cstoreDirectoryPath->data)));
+							   directoryName->data)));
 	}
 }
 
@@ -524,9 +589,7 @@ CStoreGetOptions(Oid foreignTableId)
 	/* set default filename if it is not provided */
 	if (filename == NULL)
 	{
-		Relation relation = relation_open(foreignTableId, AccessShareLock);
-		filename = CStoreFilePath(relation->rd_node);
-		relation_close(relation, AccessShareLock);
+		filename = CStoreDefaultFilePath(foreignTableId);
 	}
 
 	cstoreFdwOptions = palloc0(sizeof(CStoreFdwOptions));
@@ -584,6 +647,9 @@ static void
 ValidateForeignTableOptions(char *filename, char *compressionTypeString,
 							char *stripeRowCountString, char *blockRowCountString)
 {
+	/* we currently do not have any checks for filename */
+	(void) filename;
+
 	/* check if the provided compression type is valid */
 	if (compressionTypeString != NULL)
 	{
@@ -628,20 +694,24 @@ ValidateForeignTableOptions(char *filename, char *compressionTypeString,
 }
 
 
-/* 
- * CStoreFilePath constructs the default file path to use for cstore_fdw tables.
- * The path is of the form $PGDATA/cstore_fdw/{databaseOid}/{relfilenode}.
+/*
+ * CStoreDefaultFilePath constructs the default file path to use for a cstore_fdw
+ * table. The path is of the form $PGDATA/cstore_fdw/{databaseOid}/{relfilenode}.
  */
 static char *
-CStoreFilePath(RelFileNode relationFileNode)
+CStoreDefaultFilePath(Oid foreignTableId)
 {
-	StringInfo cstoreFilePath = NULL;
+	Relation relation = relation_open(foreignTableId, AccessShareLock);
+	RelFileNode relationFileNode = relation->rd_node; 
+
 	Oid databaseOid = relationFileNode.dbNode;
 	Oid relationFileOid = relationFileNode.relNode;
 
-	cstoreFilePath = makeStringInfo();
-	appendStringInfo(cstoreFilePath, "%s/cstore_fdw/%u/%u", DataDir, databaseOid,
-					 relationFileOid);
+	StringInfo cstoreFilePath = makeStringInfo();
+	appendStringInfo(cstoreFilePath, "%s/%s/%u/%u", DataDir, CSTORE_FDW_NAME,
+					 databaseOid, relationFileOid);
+
+	relation_close(relation, AccessShareLock);
 
 	return cstoreFilePath->data;
 }
