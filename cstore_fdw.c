@@ -52,12 +52,16 @@ static void CStoreProcessUtility(Node *parseTree, const char *queryString,
 static bool CStoreTable(RangeVar *rangeVar);
 static uint64 CopyIntoCStoreTable(const CopyStmt *copyStatement,
 								  const char *queryString);
+static void CreateCStoreDatabaseDirectory(Oid databaseOid);
+static bool DirectoryExists(StringInfo directoryName);
+static void CreateDirectory(StringInfo directoryName);
 static StringInfo OptionNamesString(Oid currentContextId);
 static CStoreFdwOptions * CStoreGetOptions(Oid foreignTableId);
 static char * CStoreGetOptionValue(Oid foreignTableId, const char *optionName);
 static void ValidateForeignTableOptions(char *filename, char *compressionTypeString,
 										char *stripeRowCountString,
 										char *blockRowCountString);
+static char * CStoreDefaultFilePath(Oid foreignTableId);
 static CompressionType ParseCompressionType(const char *compressionTypeString);
 static void CStoreGetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel,
 									Oid foreignTableId);
@@ -120,7 +124,9 @@ void _PG_fini(void)
  * CStoreProcessUtility is the hook for handling utility commands. This function
  * intercepts "COPY cstore_table FROM" statements, and redirectes execution to
  * CopyIntoCStoreTable function. For all other utility statements, the function
- * calls the previous utility hook or the standard utility command.
+ * calls the previous utility hook or the standard utility command. For CREATE
+ * SERVER commands, it creates the directory used to store automatically managed
+ * cstore_fdw files in addition to calling the standard/previous utility.
  */
 static void
 CStoreProcessUtility(Node *parseTree, const char *queryString,
@@ -157,6 +163,17 @@ CStoreProcessUtility(Node *parseTree, const char *queryString,
 	{
 		standard_ProcessUtility(parseTree, queryString, context, paramListInfo,
 								destReceiver, completionTag);
+	}
+
+	if (nodeTag(parseTree) == T_CreateForeignServerStmt)
+	{
+		CreateForeignServerStmt *serverStatement = (CreateForeignServerStmt *) parseTree;
+
+		char *foreignWrapperName = serverStatement->fdwname;
+		if (strncmp(foreignWrapperName, CSTORE_FDW_NAME, NAMEDATALEN) == 0)
+		{
+			CreateCStoreDatabaseDirectory(MyDatabaseId);
+		}
 	}
 }
 
@@ -309,6 +326,89 @@ CopyIntoCStoreTable(const CopyStmt *copyStatement, const char *queryString)
 	heap_close(relation, ExclusiveLock);
 
 	return processedRowCount;
+}
+
+
+/*
+ * CreateCStoreDatabaseDirectory creates the directory (and parent directories,
+ * if needed) used to store automatically managed cstore_fdw files. The path to
+ * the directory is $PGDATA/cstore_fdw/{databaseOid}.
+ */
+static void
+CreateCStoreDatabaseDirectory(Oid databaseOid)
+{
+	bool cstoreDirectoryExists = false;
+	bool databaseDirectoryExists = false;
+	StringInfo cstoreDatabaseDirectoryPath = NULL;
+
+	StringInfo cstoreDirectoryPath = makeStringInfo();
+	appendStringInfo(cstoreDirectoryPath, "%s/%s", DataDir, CSTORE_FDW_NAME);
+
+	cstoreDirectoryExists = DirectoryExists(cstoreDirectoryPath);
+	if (!cstoreDirectoryExists)
+	{
+		CreateDirectory(cstoreDirectoryPath);
+	}
+
+	cstoreDatabaseDirectoryPath = makeStringInfo();
+	appendStringInfo(cstoreDatabaseDirectoryPath, "%s/%s/%u", DataDir,
+					 CSTORE_FDW_NAME, databaseOid);
+
+	databaseDirectoryExists = DirectoryExists(cstoreDatabaseDirectoryPath);
+	if (!databaseDirectoryExists)
+	{
+		CreateDirectory(cstoreDatabaseDirectoryPath);
+	}
+}
+
+
+/* DirectoryExists checks if a directory exists for the given directory name. */
+static bool
+DirectoryExists(StringInfo directoryName)
+{
+	bool directoryExists = true;
+	struct stat directoryStat;
+
+	int statOK = stat(directoryName->data, &directoryStat);
+	if (statOK == 0)
+	{
+		/* file already exists; check that it is a directory */
+		if (!S_ISDIR(directoryStat.st_mode))
+		{
+			ereport(ERROR, (errmsg("\"%s\" is not a directory", directoryName->data),
+							errhint("You need to remove or rename the file \"%s\".",
+									directoryName->data)));
+		}
+	}
+	else
+	{
+		if (errno == ENOENT)
+		{
+			directoryExists = false;
+		}
+		else
+		{
+			ereport(ERROR, (errcode_for_file_access(),
+							errmsg("could not stat directory \"%s\": %m",
+								   directoryName->data)));
+		}
+	}
+
+	return directoryExists;
+}
+
+
+/* CreateDirectory creates a new directory with the given directory name. */
+static void
+CreateDirectory(StringInfo directoryName)
+{
+	int makeOK = mkdir(directoryName->data, S_IRWXU);
+	if (makeOK != 0)
+	{
+		ereport(ERROR, (errcode_for_file_access(),
+						errmsg("could not create directory \"%s\": %m",
+							   directoryName->data)));
+	}
 }
 
 
@@ -486,6 +586,12 @@ CStoreGetOptions(Oid foreignTableId)
 		blockRowCount = pg_atoi(blockRowCountString, sizeof(int32), 0);
 	}
 
+	/* set default filename if it is not provided */
+	if (filename == NULL)
+	{
+		filename = CStoreDefaultFilePath(foreignTableId);
+	}
+
 	cstoreFdwOptions = palloc0(sizeof(CStoreFdwOptions));
 	cstoreFdwOptions->filename = filename;
 	cstoreFdwOptions->compressionType = compressionType;
@@ -541,12 +647,8 @@ static void
 ValidateForeignTableOptions(char *filename, char *compressionTypeString,
 							char *stripeRowCountString, char *blockRowCountString)
 {
-	/* check if filename is specified */
-	if (filename == NULL)
-	{
-		ereport(ERROR, (errcode(ERRCODE_FDW_DYNAMIC_PARAMETER_VALUE_NEEDED),
-						errmsg("filename is required for cstore foreign tables")));
-	}
+	/* we currently do not have any checks for filename */
+	(void) filename;
 
 	/* check if the provided compression type is valid */
 	if (compressionTypeString != NULL)
@@ -589,6 +691,29 @@ ValidateForeignTableOptions(char *filename, char *compressionTypeString,
 									BLOCK_ROW_COUNT_MAXIMUM)));
 		}
 	}
+}
+
+
+/*
+ * CStoreDefaultFilePath constructs the default file path to use for a cstore_fdw
+ * table. The path is of the form $PGDATA/cstore_fdw/{databaseOid}/{relfilenode}.
+ */
+static char *
+CStoreDefaultFilePath(Oid foreignTableId)
+{
+	Relation relation = relation_open(foreignTableId, AccessShareLock);
+	RelFileNode relationFileNode = relation->rd_node; 
+
+	Oid databaseOid = relationFileNode.dbNode;
+	Oid relationFileOid = relationFileNode.relNode;
+
+	StringInfo cstoreFilePath = makeStringInfo();
+	appendStringInfo(cstoreFilePath, "%s/%s/%u/%u", DataDir, CSTORE_FDW_NAME,
+					 databaseOid, relationFileOid);
+
+	relation_close(relation, AccessShareLock);
+
+	return cstoreFilePath->data;
 }
 
 

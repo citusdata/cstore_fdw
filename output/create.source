@@ -10,9 +10,6 @@ CREATE FOREIGN TABLE test_validator_invalid_option ()
 	OPTIONS(filename 'data.cstore', bad_option_name '1'); -- ERROR
 ERROR:  invalid option "bad_option_name"
 HINT:  Valid options in this context are: filename, compression, stripe_row_count, block_row_count
-CREATE FOREIGN TABLE test_validator_filename_missing () 
-	SERVER cstore_server; -- ERROR
-ERROR:  filename is required for cstore foreign tables
 CREATE FOREIGN TABLE test_validator_invalid_stripe_row_count () 
 	SERVER cstore_server
 	OPTIONS(filename 'data.cstore', stripe_row_count '0'); -- ERROR
@@ -33,9 +30,8 @@ CREATE FOREIGN TABLE contestant (handle TEXT, birthdate DATE, rating INT,
 	percentile FLOAT, country CHAR(3), achievements TEXT[])
 	SERVER cstore_server
 	OPTIONS(filename '@abs_srcdir@/data/contestant.cstore');
--- Create compressed table
+-- Create compressed table with automatically determined file path
 CREATE FOREIGN TABLE contestant_compressed (handle TEXT, birthdate DATE, rating INT,
 	percentile FLOAT, country CHAR(3), achievements TEXT[])
 	SERVER cstore_server
-	OPTIONS(filename '@abs_srcdir@/data/contestant_compressed.cstore',
-			compression 'pglz');
+	OPTIONS(compression 'pglz');
