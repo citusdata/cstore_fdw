@@ -16,3 +16,12 @@ LANGUAGE C STRICT;
 CREATE FOREIGN DATA WRAPPER cstore_fdw
   HANDLER cstore_fdw_handler
   VALIDATOR cstore_fdw_validator;
+
+CREATE FUNCTION cstore_ddl_event_end_trigger()
+RETURNS event_trigger
+AS 'MODULE_PATHNAME'
+LANGUAGE C STRICT;
+
+CREATE EVENT TRIGGER cstore_ddl_event_end
+ON ddl_command_end
+EXECUTE PROCEDURE cstore_ddl_event_end_trigger();

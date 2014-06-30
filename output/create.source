@@ -25,6 +25,11 @@ CREATE FOREIGN TABLE test_validator_invalid_compression_type ()
 	OPTIONS(filename 'data.cstore', compression 'invalid_compression'); -- ERROR
 ERROR:  invalid compression type
 HINT:  Valid options are: none, pglz
+-- Invalid file path test
+CREATE FOREIGN TABLE test_invalid_file_path ()
+	SERVER cstore_server
+	OPTIONS(filename 'bad_directory_path/bad_file_path'); --ERROR
+ERROR:  could not open file "bad_directory_path/bad_file_path" for writing: No such file or directory
 -- Create uncompressed table
 CREATE FOREIGN TABLE contestant (handle TEXT, birthdate DATE, rating INT,
 	percentile FLOAT, country CHAR(3), achievements TEXT[])
@@ -35,3 +40,11 @@ CREATE FOREIGN TABLE contestant_compressed (handle TEXT, birthdate DATE, rating 
 	percentile FLOAT, country CHAR(3), achievements TEXT[])
 	SERVER cstore_server
 	OPTIONS(compression 'pglz');
+-- Test that querying an empty table works
+ANALYZE contestant;
+SELECT count(*) FROM contestant;
+ count 
+-------
+     0
+(1 row)
+
