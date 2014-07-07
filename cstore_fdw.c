@@ -98,7 +98,6 @@ PG_MODULE_MAGIC;
 
 PG_FUNCTION_INFO_V1(cstore_fdw_handler);
 PG_FUNCTION_INFO_V1(cstore_fdw_validator);
-
 PG_FUNCTION_INFO_V1(cstore_ddl_event_end_trigger);
 
 
@@ -130,22 +129,25 @@ void _PG_fini(void)
 
 /*
  * cstore_ddl_event_end_trigger is the event trigger function which is called on
- * ddl_command_end event. This function handles those commands which require a
- * specific action to be taken after successful command execution.
+ * ddl_command_end event. This function creates required directories after the
+ * CREATE SERVER statement and valid data and footer files after the CREATE FOREIGN
+ * TABLE statement.
  */
 Datum
 cstore_ddl_event_end_trigger(PG_FUNCTION_ARGS)
 {
-	EventTriggerData *triggerData = (EventTriggerData *) fcinfo->context;
-	Node *parseTree = triggerData->parsetree;
+	EventTriggerData *triggerData = NULL;
+	Node *parseTree = NULL;
 
 	/* error if event trigger manager did not call this function */
 	if (!CALLED_AS_EVENT_TRIGGER(fcinfo))
 	{
-		elog(ERROR, "not fired by event trigger manager");
+		ereport(ERROR, (errmsg("trigger not fired by event trigger manager")));
 	}
 
-	/* create directory to store cstore_fdw files after CREATE SERVER statement */
+	triggerData = (EventTriggerData *) fcinfo->context;
+	parseTree = triggerData->parsetree;
+
 	if (nodeTag(parseTree) == T_CreateForeignServerStmt)
 	{
 		CreateForeignServerStmt *serverStatement = (CreateForeignServerStmt *) parseTree;
@@ -156,9 +158,7 @@ cstore_ddl_event_end_trigger(PG_FUNCTION_ARGS)
 			CreateCStoreDatabaseDirectory(MyDatabaseId);
 		}
 	}
-
-	/* initialize write state for cstore_fdw after CREATE FOREIGN TABLE statement */
-	if (nodeTag(parseTree) == T_CreateForeignTableStmt)
+	else if (nodeTag(parseTree) == T_CreateForeignTableStmt)
 	{
 		CreateForeignTableStmt *createStatement = (CreateForeignTableStmt *) parseTree;
 
@@ -174,17 +174,16 @@ cstore_ddl_event_end_trigger(PG_FUNCTION_ARGS)
 			CStoreFdwOptions *cstoreFdwOptions = CStoreGetOptions(relationId);
 
 			/*
-			 * Initialize state to write to the cstore file. This function errors
-			 * if the required files cannot be created.
+			 * Initialize state to write to the cstore file. This creates an
+			 * empty data file and a valid footer file for the table.
 			 */
 			writeState = CStoreBeginWrite(cstoreFdwOptions->filename,
 										  cstoreFdwOptions->compressionType,
 										  cstoreFdwOptions->stripeRowCount,
 										  cstoreFdwOptions->blockRowCount,
 										  tupleDescriptor);
-
-			/* end write session and close the relation */
 			CStoreEndWrite(writeState);
+
 			heap_close(relation, ExclusiveLock);
 		}
 	}
@@ -528,20 +527,20 @@ DeleteCStoreTableFiles(char *filename)
 	appendStringInfo(tableFooterFilename, "%s%s", filename, CSTORE_FOOTER_FILE_SUFFIX);
 
 	/* delete the footer file */
-	footerFileRemoved = remove(tableFooterFilename->data);
+	footerFileRemoved = unlink(tableFooterFilename->data);
 	if (footerFileRemoved != 0)
 	{
 		ereport(WARNING, (errcode_for_file_access(),
-						  errmsg("could not remove file \"%s\": %m",
+						  errmsg("could not delete file \"%s\": %m",
 						  tableFooterFilename->data)));
 	}
 
 	/* delete the data file */
-	dataFileRemoved = remove(filename);
+	dataFileRemoved = unlink(filename);
 	if (dataFileRemoved != 0)
 	{
 		ereport(WARNING, (errcode_for_file_access(),
-						  errmsg("could not remove file \"%s\": %m",
+						  errmsg("could not delete file \"%s\": %m",
 						  filename)));
 	}
 }
