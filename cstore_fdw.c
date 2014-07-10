@@ -23,9 +23,11 @@
 #include "access/htup_details.h"
 #include "access/reloptions.h"
 #include "access/sysattr.h"
+#include "catalog/namespace.h"
 #include "catalog/pg_foreign_table.h"
 #include "commands/copy.h"
 #include "commands/defrem.h"
+#include "commands/event_trigger.h"
 #include "commands/explain.h"
 #include "commands/vacuum.h"
 #include "foreign/fdwapi.h"
@@ -55,6 +57,7 @@ static uint64 CopyIntoCStoreTable(const CopyStmt *copyStatement,
 static void CreateCStoreDatabaseDirectory(Oid databaseOid);
 static bool DirectoryExists(StringInfo directoryName);
 static void CreateDirectory(StringInfo directoryName);
+static void DeleteCStoreTableFiles(char *filename);
 static StringInfo OptionNamesString(Oid currentContextId);
 static CStoreFdwOptions * CStoreGetOptions(Oid foreignTableId);
 static char * CStoreGetOptionValue(Oid foreignTableId, const char *optionName);
@@ -86,12 +89,16 @@ static int CStoreAcquireSampleRows(Relation relation, int logLevel,
 								   HeapTuple *sampleRows, int targetRowCount,
 								   double *totalRowCount, double *totalDeadRowCount);
 
+/* event trigger function declarations */
+Datum cstore_ddl_event_end_trigger(PG_FUNCTION_ARGS);
+
 
 /* declarations for dynamic loading */
 PG_MODULE_MAGIC;
 
 PG_FUNCTION_INFO_V1(cstore_fdw_handler);
 PG_FUNCTION_INFO_V1(cstore_fdw_validator);
+PG_FUNCTION_INFO_V1(cstore_ddl_event_end_trigger);
 
 
 /* saved hook value in case of unload */
@@ -121,12 +128,78 @@ void _PG_fini(void)
 
 
 /*
+ * cstore_ddl_event_end_trigger is the event trigger function which is called on
+ * ddl_command_end event. This function creates required directories after the
+ * CREATE SERVER statement and valid data and footer files after the CREATE FOREIGN
+ * TABLE statement.
+ */
+Datum
+cstore_ddl_event_end_trigger(PG_FUNCTION_ARGS)
+{
+	EventTriggerData *triggerData = NULL;
+	Node *parseTree = NULL;
+
+	/* error if event trigger manager did not call this function */
+	if (!CALLED_AS_EVENT_TRIGGER(fcinfo))
+	{
+		ereport(ERROR, (errmsg("trigger not fired by event trigger manager")));
+	}
+
+	triggerData = (EventTriggerData *) fcinfo->context;
+	parseTree = triggerData->parsetree;
+
+	if (nodeTag(parseTree) == T_CreateForeignServerStmt)
+	{
+		CreateForeignServerStmt *serverStatement = (CreateForeignServerStmt *) parseTree;
+
+		char *foreignWrapperName = serverStatement->fdwname;
+		if (strncmp(foreignWrapperName, CSTORE_FDW_NAME, NAMEDATALEN) == 0)
+		{
+			CreateCStoreDatabaseDirectory(MyDatabaseId);
+		}
+	}
+	else if (nodeTag(parseTree) == T_CreateForeignTableStmt)
+	{
+		CreateForeignTableStmt *createStatement = (CreateForeignTableStmt *) parseTree;
+
+		RangeVar *rangeVar = createStatement->base.relation;
+		if (CStoreTable(rangeVar))
+		{
+			TableWriteState *writeState = NULL;
+
+			Relation relation = heap_openrv(rangeVar, ExclusiveLock);
+			Oid relationId = RelationGetRelid(relation);
+			TupleDesc tupleDescriptor = RelationGetDescr(relation);
+
+			CStoreFdwOptions *cstoreFdwOptions = CStoreGetOptions(relationId);
+
+			/*
+			 * Initialize state to write to the cstore file. This creates an
+			 * empty data file and a valid footer file for the table.
+			 */
+			writeState = CStoreBeginWrite(cstoreFdwOptions->filename,
+										  cstoreFdwOptions->compressionType,
+										  cstoreFdwOptions->stripeRowCount,
+										  cstoreFdwOptions->blockRowCount,
+										  tupleDescriptor);
+			CStoreEndWrite(writeState);
+
+			heap_close(relation, ExclusiveLock);
+		}
+	}
+
+	PG_RETURN_NULL();
+}
+
+
+/*
  * CStoreProcessUtility is the hook for handling utility commands. This function
- * intercepts "COPY cstore_table FROM" statements, and redirectes execution to
- * CopyIntoCStoreTable function. For all other utility statements, the function
- * calls the previous utility hook or the standard utility command. For CREATE
- * SERVER commands, it creates the directory used to store automatically managed
- * cstore_fdw files in addition to calling the standard/previous utility.
+ * intercepts "COPY cstore_table FROM" statements, and redirects execution to
+ * CopyIntoCStoreTable function. For DROP FOREIGN TABLE commands, it stores the
+ * file path used for the table before calling the previous/standard utility
+ * command and then deletes the file once the drop is successful. For all other
+ * utility statements, the function calls the previous utility hook or the
+ * standard utility command.
  */
 static void
 CStoreProcessUtility(Node *parseTree, const char *queryString,
@@ -134,6 +207,8 @@ CStoreProcessUtility(Node *parseTree, const char *queryString,
 					 DestReceiver *destReceiver, char *completionTag)
 {
 	bool copyIntoCStoreTable = false;
+	bool dropCStoreTable = false;
+	char *tableFilename = NULL;
 
 	/* check if the statement is a "COPY cstore_table FROM ..." statement */
 	if (nodeTag(parseTree) == T_CopyStmt)
@@ -142,6 +217,38 @@ CStoreProcessUtility(Node *parseTree, const char *queryString,
 		if (copyStatement->is_from && CStoreTable(copyStatement->relation))
 		{
 			copyIntoCStoreTable = true;
+		}
+	}
+
+	/*
+	 * Check if the statement is a "DROP FOREIGN TABLE cstore_table ..."
+	 * statement and store the filename for that table if it is.
+	 */
+	if (nodeTag(parseTree) == T_DropStmt)
+	{
+		DropStmt *dropStatement = (DropStmt *) parseTree;
+		if (dropStatement->removeType == OBJECT_FOREIGN_TABLE)
+		{
+			ListCell *dropObjectCell = NULL;
+			foreach(dropObjectCell, dropStatement->objects)
+			{
+				List *tableNameList = (List *) lfirst(dropObjectCell);
+
+				RangeVar *rangeVar = makeRangeVarFromNameList(tableNameList);
+				if (CStoreTable(rangeVar))
+				{
+					Relation relation = heap_openrv(rangeVar, AccessShareLock);
+					Oid relationId = RelationGetRelid(relation);
+
+					CStoreFdwOptions *cstoreFdwOptions = CStoreGetOptions(relationId);
+					tableFilename = cstoreFdwOptions->filename;
+
+					heap_close(relation, AccessShareLock);
+
+					/* mark that this is a drop command for a cstore table */
+					dropCStoreTable = true;
+				}
+			}
 		}
 	}
 
@@ -165,15 +272,9 @@ CStoreProcessUtility(Node *parseTree, const char *queryString,
 								destReceiver, completionTag);
 	}
 
-	if (nodeTag(parseTree) == T_CreateForeignServerStmt)
+	if (dropCStoreTable)
 	{
-		CreateForeignServerStmt *serverStatement = (CreateForeignServerStmt *) parseTree;
-
-		char *foreignWrapperName = serverStatement->fdwname;
-		if (strncmp(foreignWrapperName, CSTORE_FDW_NAME, NAMEDATALEN) == 0)
-		{
-			CreateCStoreDatabaseDirectory(MyDatabaseId);
-		}
+		DeleteCStoreTableFiles(tableFilename);
 	}
 }
 
@@ -408,6 +509,39 @@ CreateDirectory(StringInfo directoryName)
 		ereport(ERROR, (errcode_for_file_access(),
 						errmsg("could not create directory \"%s\": %m",
 							   directoryName->data)));
+	}
+}
+
+
+/*
+ * DeleteCStoreTableFiles deletes the data and footer files for a cstore table
+ * whose data filename is given.
+ */
+static void
+DeleteCStoreTableFiles(char *filename)
+{
+	int dataFileRemoved = 0;
+	int footerFileRemoved = 0;
+
+	StringInfo tableFooterFilename = makeStringInfo();
+	appendStringInfo(tableFooterFilename, "%s%s", filename, CSTORE_FOOTER_FILE_SUFFIX);
+
+	/* delete the footer file */
+	footerFileRemoved = unlink(tableFooterFilename->data);
+	if (footerFileRemoved != 0)
+	{
+		ereport(WARNING, (errcode_for_file_access(),
+						  errmsg("could not delete file \"%s\": %m",
+						  tableFooterFilename->data)));
+	}
+
+	/* delete the data file */
+	dataFileRemoved = unlink(filename);
+	if (dataFileRemoved != 0)
+	{
+		ereport(WARNING, (errcode_for_file_access(),
+						  errmsg("could not delete file \"%s\": %m",
+						  filename)));
 	}
 }
 
