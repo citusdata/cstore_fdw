@@ -660,7 +660,16 @@ CStoreGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId
 	List *queryColumnList = ColumnList(baserel);
 	uint32 queryColumnCount = list_length(queryColumnList);
 	BlockNumber relationPageCount = PageCount(cstoreFdwOptions->filename);
-	uint32 relationColumnCount = baserel->max_attr - baserel->min_attr + 1;
+
+	/*
+	 * We don't need to count all attributes here. Each relation also have some
+	 * standard attributes like tableoid, cmax, xmax, ... which have negative
+	 * attnum. If we use max_attr - min_attr + 1, we will also counts standard
+	 * attributes. In get_relation_info at plancat.c, max_attr is set to
+	 * RelationGetNumberOfAttributes(relation) which counts the attributes other
+	 * than the standard attributes.
+	 */
+	uint32 relationColumnCount = baserel->max_attr;
 
 	double queryColumnRatio = (double) queryColumnCount / relationColumnCount;
 	double queryPageCount = relationPageCount * queryColumnRatio;
