@@ -25,3 +25,8 @@ LANGUAGE C STRICT;
 CREATE EVENT TRIGGER cstore_ddl_event_end
 ON ddl_command_end
 EXECUTE PROCEDURE cstore_ddl_event_end_trigger();
+
+CREATE FUNCTION cstore_table_size(relation regclass)
+RETURNS bigint
+AS 'MODULE_PATHNAME'
+LANGUAGE C STRICT;

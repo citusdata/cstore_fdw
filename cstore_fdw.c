@@ -99,6 +99,7 @@ PG_MODULE_MAGIC;
 PG_FUNCTION_INFO_V1(cstore_fdw_handler);
 PG_FUNCTION_INFO_V1(cstore_fdw_validator);
 PG_FUNCTION_INFO_V1(cstore_ddl_event_end_trigger);
+PG_FUNCTION_INFO_V1(cstore_table_size);
 
 
 /* saved hook value in case of unload */
@@ -543,6 +544,50 @@ DeleteCStoreTableFiles(char *filename)
 						  errmsg("could not delete file \"%s\": %m",
 						  filename)));
 	}
+}
+
+
+/*
+ * cstore_table_size returns the total on-disk size of a cstore table. The result
+ * includes the sizes of data file and footer file.
+ */
+Datum
+cstore_table_size(PG_FUNCTION_ARGS)
+{
+	Oid relationId = PG_GETARG_OID(0);
+	int64 tableSize = 0;
+	int dataFileStatResult = 0;
+	int footerFileStatResult = 0;
+	struct stat dataFileStatBuffer;
+	struct stat footerFileStatBuffer;
+	StringInfo tableFooterFilename = NULL;
+
+	CStoreFdwOptions *cstoreFdwOptions = CStoreGetOptions(relationId);
+	char *dataFilename = cstoreFdwOptions->filename;
+
+	dataFileStatResult = stat(dataFilename, &dataFileStatBuffer);
+	if (dataFileStatResult != 0)
+	{
+		ereport(ERROR, (errcode_for_file_access(),
+						errmsg("could not stat file \"%s\": %m", dataFilename)));
+	}
+
+	tableFooterFilename = makeStringInfo();
+	appendStringInfo(tableFooterFilename, "%s%s", dataFilename,
+					 CSTORE_FOOTER_FILE_SUFFIX);
+
+	footerFileStatResult = stat(tableFooterFilename->data, &footerFileStatBuffer);
+	if (footerFileStatResult != 0)
+	{
+		ereport(ERROR, (errcode_for_file_access(),
+						errmsg("could not stat file \"%s\": %m",
+								tableFooterFilename->data)));
+	}
+
+	tableSize += dataFileStatBuffer.st_size;
+	tableSize += footerFileStatBuffer.st_size;
+
+	PG_RETURN_INT64(tableSize);
 }
 
 

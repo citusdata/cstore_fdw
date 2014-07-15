@@ -271,6 +271,9 @@ extern void _PG_fini(void);
 extern Datum cstore_fdw_handler(PG_FUNCTION_ARGS);
 extern Datum cstore_fdw_validator(PG_FUNCTION_ARGS);
 
+/* Function declarations for utility UDF's */
+extern Datum cstore_table_size(PG_FUNCTION_ARGS);
+
 /* Function declarations for writing to a cstore file */
 extern TableWriteState * CStoreBeginWrite(const char *filename,
 										  CompressionType compressionType,
