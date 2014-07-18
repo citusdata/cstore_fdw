@@ -640,6 +640,7 @@ CStoreGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId
 {
 	Path *foreignScanPath = NULL;
 	CStoreFdwOptions *cstoreFdwOptions = CStoreGetOptions(foreignTableId);
+	Relation relation = heap_open(foreignTableId, AccessShareLock);
 
 	/*
 	 * We skip reading columns that are not in query. Here we assume that all
@@ -660,16 +661,7 @@ CStoreGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId
 	List *queryColumnList = ColumnList(baserel);
 	uint32 queryColumnCount = list_length(queryColumnList);
 	BlockNumber relationPageCount = PageCount(cstoreFdwOptions->filename);
-
-	/*
-	 * We don't need to count all attributes here. Each relation also have some
-	 * standard attributes like tableoid, cmax, xmax, ... which have negative
-	 * attnum. If we use max_attr - min_attr + 1, we will also counts standard
-	 * attributes. In get_relation_info at plancat.c, max_attr is set to
-	 * RelationGetNumberOfAttributes(relation) which counts the attributes other
-	 * than the standard attributes.
-	 */
-	uint32 relationColumnCount = baserel->max_attr;
+	uint32 relationColumnCount = RelationGetNumberOfAttributes(relation);
 
 	double queryColumnRatio = (double) queryColumnCount / relationColumnCount;
 	double queryPageCount = relationPageCount * queryColumnRatio;
@@ -696,6 +688,7 @@ CStoreGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId
 													   NIL); /* no fdw_private */
 
 	add_path(baserel, foreignScanPath);
+	heap_close(relation, AccessShareLock);
 }
 
 
