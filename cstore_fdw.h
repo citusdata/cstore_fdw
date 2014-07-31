@@ -267,12 +267,15 @@ typedef struct TableWriteState
 extern void _PG_init(void);
 extern void _PG_fini(void);
 
+/* event trigger function declarations */
+extern Datum cstore_ddl_event_end_trigger(PG_FUNCTION_ARGS);
+
+/* Function declarations for utility UDFs */
+extern Datum cstore_table_size(PG_FUNCTION_ARGS);
+
 /* Function declarations for foreign data wrapper */
 extern Datum cstore_fdw_handler(PG_FUNCTION_ARGS);
 extern Datum cstore_fdw_validator(PG_FUNCTION_ARGS);
-
-/* Function declarations for utility UDF's */
-extern Datum cstore_table_size(PG_FUNCTION_ARGS);
 
 /* Function declarations for writing to a cstore file */
 extern TableWriteState * CStoreBeginWrite(const char *filename,

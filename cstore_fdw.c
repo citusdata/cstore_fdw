@@ -51,7 +51,7 @@ static void CStoreProcessUtility(Node *parseTree, const char *queryString,
 								 ProcessUtilityContext context,
 								 ParamListInfo paramListInfo,
 								 DestReceiver *destReceiver, char *completionTag);
-static bool CStoreTable(RangeVar *rangeVar);
+static bool CStoreTable(Oid relationId);
 static uint64 CopyIntoCStoreTable(const CopyStmt *copyStatement,
 								  const char *queryString);
 static void CreateCStoreDatabaseDirectory(Oid databaseOid);
@@ -89,17 +89,14 @@ static int CStoreAcquireSampleRows(Relation relation, int logLevel,
 								   HeapTuple *sampleRows, int targetRowCount,
 								   double *totalRowCount, double *totalDeadRowCount);
 
-/* event trigger function declarations */
-Datum cstore_ddl_event_end_trigger(PG_FUNCTION_ARGS);
-
 
 /* declarations for dynamic loading */
 PG_MODULE_MAGIC;
 
-PG_FUNCTION_INFO_V1(cstore_fdw_handler);
-PG_FUNCTION_INFO_V1(cstore_fdw_validator);
 PG_FUNCTION_INFO_V1(cstore_ddl_event_end_trigger);
 PG_FUNCTION_INFO_V1(cstore_table_size);
+PG_FUNCTION_INFO_V1(cstore_fdw_handler);
+PG_FUNCTION_INFO_V1(cstore_fdw_validator);
 
 
 /* saved hook value in case of unload */
@@ -163,15 +160,14 @@ cstore_ddl_event_end_trigger(PG_FUNCTION_ARGS)
 	{
 		CreateForeignTableStmt *createStatement = (CreateForeignTableStmt *) parseTree;
 
-		RangeVar *rangeVar = createStatement->base.relation;
-		if (CStoreTable(rangeVar))
+		Oid relationId = RangeVarGetRelid(createStatement->base.relation,
+										  AccessShareLock, false);
+		if (CStoreTable(relationId))
 		{
 			TableWriteState *writeState = NULL;
 
-			Relation relation = heap_openrv(rangeVar, ExclusiveLock);
-			Oid relationId = RelationGetRelid(relation);
+			Relation relation = heap_open(relationId, ExclusiveLock);
 			TupleDesc tupleDescriptor = RelationGetDescr(relation);
-
 			CStoreFdwOptions *cstoreFdwOptions = CStoreGetOptions(relationId);
 
 			/*
@@ -215,7 +211,10 @@ CStoreProcessUtility(Node *parseTree, const char *queryString,
 	if (nodeTag(parseTree) == T_CopyStmt)
 	{
 		CopyStmt *copyStatement = (CopyStmt *) parseTree;
-		if (copyStatement->is_from && CStoreTable(copyStatement->relation))
+
+		Oid relationId = RangeVarGetRelid(copyStatement->relation,
+										  AccessShareLock, false);
+		if (copyStatement->is_from && CStoreTable(relationId))
 		{
 			copyIntoCStoreTable = true;
 		}
@@ -234,17 +233,13 @@ CStoreProcessUtility(Node *parseTree, const char *queryString,
 			foreach(dropObjectCell, dropStatement->objects)
 			{
 				List *tableNameList = (List *) lfirst(dropObjectCell);
-
 				RangeVar *rangeVar = makeRangeVarFromNameList(tableNameList);
-				if (CStoreTable(rangeVar))
-				{
-					Relation relation = heap_openrv(rangeVar, AccessShareLock);
-					Oid relationId = RelationGetRelid(relation);
 
+				Oid relationId = RangeVarGetRelid(rangeVar, AccessShareLock, false);
+				if (relationId)
+				{
 					CStoreFdwOptions *cstoreFdwOptions = CStoreGetOptions(relationId);
 					tableFilename = cstoreFdwOptions->filename;
-
-					heap_close(relation, AccessShareLock);
 
 					/* mark that this is a drop command for a cstore table */
 					dropCStoreTable = true;
@@ -285,11 +280,9 @@ CStoreProcessUtility(Node *parseTree, const char *queryString,
  * table. If it does, the function returns true. Otherwise, it returns false.
  */
 static bool
-CStoreTable(RangeVar *rangeVar)
+CStoreTable(Oid relationId)
 {
 	bool cstoreTable = false;
-	Relation relation = heap_openrv(rangeVar, AccessShareLock);
-	Oid relationId = RelationGetRelid(relation);
 
 	char relationKind = get_rel_relkind(relationId);
 	if (relationKind == RELKIND_FOREIGN_TABLE)
@@ -304,8 +297,6 @@ CStoreTable(RangeVar *rangeVar)
 			cstoreTable = true;
 		}
 	}
-
-	heap_close(relation, AccessShareLock);
 
 	return cstoreTable;
 }
@@ -533,7 +524,7 @@ DeleteCStoreTableFiles(char *filename)
 	{
 		ereport(WARNING, (errcode_for_file_access(),
 						  errmsg("could not delete file \"%s\": %m",
-						  tableFooterFilename->data)));
+								 tableFooterFilename->data)));
 	}
 
 	/* delete the data file */
@@ -542,28 +533,37 @@ DeleteCStoreTableFiles(char *filename)
 	{
 		ereport(WARNING, (errcode_for_file_access(),
 						  errmsg("could not delete file \"%s\": %m",
-						  filename)));
+								 filename)));
 	}
 }
 
 
 /*
- * cstore_table_size returns the total on-disk size of a cstore table. The result
- * includes the sizes of data file and footer file.
+ * cstore_table_size returns the total on-disk size of a cstore table in bytes.
+ * The result includes the sizes of data file and footer file.
  */
 Datum
 cstore_table_size(PG_FUNCTION_ARGS)
 {
 	Oid relationId = PG_GETARG_OID(0);
+
 	int64 tableSize = 0;
+	CStoreFdwOptions *cstoreFdwOptions = NULL;
+	char *dataFilename = NULL;
+	StringInfo footerFilename = NULL;
 	int dataFileStatResult = 0;
 	int footerFileStatResult = 0;
 	struct stat dataFileStatBuffer;
 	struct stat footerFileStatBuffer;
-	StringInfo tableFooterFilename = NULL;
 
-	CStoreFdwOptions *cstoreFdwOptions = CStoreGetOptions(relationId);
-	char *dataFilename = cstoreFdwOptions->filename;
+	bool cstoreTable = CStoreTable(relationId);
+	if (!cstoreTable)
+	{
+		ereport(ERROR, (errmsg("relation is not a cstore table")));
+	}
+
+	cstoreFdwOptions = CStoreGetOptions(relationId);
+	dataFilename = cstoreFdwOptions->filename;
 
 	dataFileStatResult = stat(dataFilename, &dataFileStatBuffer);
 	if (dataFileStatResult != 0)
@@ -572,16 +572,16 @@ cstore_table_size(PG_FUNCTION_ARGS)
 						errmsg("could not stat file \"%s\": %m", dataFilename)));
 	}
 
-	tableFooterFilename = makeStringInfo();
-	appendStringInfo(tableFooterFilename, "%s%s", dataFilename,
+	footerFilename = makeStringInfo();
+	appendStringInfo(footerFilename, "%s%s", dataFilename,
 					 CSTORE_FOOTER_FILE_SUFFIX);
 
-	footerFileStatResult = stat(tableFooterFilename->data, &footerFileStatBuffer);
+	footerFileStatResult = stat(footerFilename->data, &footerFileStatBuffer);
 	if (footerFileStatResult != 0)
 	{
 		ereport(ERROR, (errcode_for_file_access(),
 						errmsg("could not stat file \"%s\": %m",
-								tableFooterFilename->data)));
+								footerFilename->data)));
 	}
 
 	tableSize += dataFileStatBuffer.st_size;
