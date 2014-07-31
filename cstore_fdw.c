@@ -944,6 +944,7 @@ CStoreGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId
 {
 	Path *foreignScanPath = NULL;
 	CStoreFdwOptions *cstoreFdwOptions = CStoreGetOptions(foreignTableId);
+	Relation relation = heap_open(foreignTableId, AccessShareLock);
 
 	/*
 	 * We skip reading columns that are not in query. Here we assume that all
@@ -964,7 +965,7 @@ CStoreGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId
 	List *queryColumnList = ColumnList(baserel);
 	uint32 queryColumnCount = list_length(queryColumnList);
 	BlockNumber relationPageCount = PageCount(cstoreFdwOptions->filename);
-	uint32 relationColumnCount = baserel->max_attr - baserel->min_attr + 1;
+	uint32 relationColumnCount = RelationGetNumberOfAttributes(relation);
 
 	double queryColumnRatio = (double) queryColumnCount / relationColumnCount;
 	double queryPageCount = relationPageCount * queryColumnRatio;
@@ -991,6 +992,7 @@ CStoreGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId
 													   NIL); /* no fdw_private */
 
 	add_path(baserel, foreignScanPath);
+	heap_close(relation, AccessShareLock);
 }
 
 
