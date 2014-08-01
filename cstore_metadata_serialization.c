@@ -240,7 +240,7 @@ DeserializePostScript(StringInfo buffer, uint64 *tableFooterLength)
 	}
 
 	if (protobufPostScript->versionmajor != CSTORE_VERSION_MAJOR ||
-		protobufPostScript->versionminor != CSTORE_VERSION_MINOR)
+		protobufPostScript->versionminor > CSTORE_VERSION_MINOR)
 	{
 		ereport(ERROR, (errmsg("could not unpack column store"),
 						errdetail("invalid column store version number")));

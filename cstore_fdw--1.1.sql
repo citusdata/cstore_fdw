@@ -1,4 +1,4 @@
-/* cstore_fdw/cstore_fdw--1.0.sql */
+/* cstore_fdw/cstore_fdw--1.1.sql */
 
 -- complain if script is sourced in psql, rather than via CREATE EXTENSION
 \echo Use "CREATE EXTENSION cstore_fdw" to load this file. \quit
@@ -14,8 +14,8 @@ AS 'MODULE_PATHNAME'
 LANGUAGE C STRICT;
 
 CREATE FOREIGN DATA WRAPPER cstore_fdw
-  HANDLER cstore_fdw_handler
-  VALIDATOR cstore_fdw_validator;
+HANDLER cstore_fdw_handler
+VALIDATOR cstore_fdw_validator;
 
 CREATE FUNCTION cstore_ddl_event_end_trigger()
 RETURNS event_trigger
