@@ -16,3 +16,11 @@ CREATE FUNCTION cstore_table_size(relation regclass)
 RETURNS bigint
 AS 'MODULE_PATHNAME'
 LANGUAGE C STRICT;
+
+-- cstore_fdw creates directories to store files for tables with automatically
+-- determined filename during the CREATE SERVER statement. Since this feature
+-- was newly added in v1.1, servers created with v1.0 did not create them. So,
+-- we create a server with v1.1 to ensure that the required directories are
+-- created to allow users to create automatically managed tables with old servers.
+CREATE SERVER cstore_server_for_updating_1_0_to_1_1 FOREIGN DATA WRAPPER cstore_fdw;
+DROP SERVER cstore_server_for_updating_1_0_to_1_1;
