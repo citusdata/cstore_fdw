@@ -75,19 +75,19 @@ in your ```postgresql.conf``` and restart Postgres:
 
 The following parameters can be set on a cstore foreign table object.
 
-* filename: The absolute path to the location for storing table data. Before
-  creating your columnar tables, you may want to choose and create a directory
-  to keep your cstore files.
-* compression: The compression used for compressing value streams. Valid
-  options are ```none``` and ```pglz```. The default is ```none```.
-* stripe\_row\_count: Number of rows per stripe. The default is ```150000```.
-  Reducing this decreases the amount memory used for loading data and querying,
-  but also decreases the performance.
-* block\_row\_count: Number of rows per column block. The default is ```10000```.
-  cstore\_fdw compresses, creates skip indexes, and reads from disk at the block
-  granularity. Increasing this value helps with compression and results in fewer
-  reads from disk. However, higher values also reduce the probability of skipping
-  over unrelated row blocks.
+* filename (optional): The absolute path to the location for storing table data.
+  If you don't specify the filename option, cstore\_fdw will automatically
+  choose the $PGDATA/cstore\_fdw directory to store the files.
+* compression (optional): The compression used for compressing value streams.
+  Valid options are ```none``` and ```pglz```. The default is ```none```.
+* stripe\_row\_count (optional): Number of rows per stripe. The default is
+  ```150000```. Reducing this decreases the amount memory used for loading data
+  and querying, but also decreases the performance.
+* block\_row\_count (optional): Number of rows per column block. The default is
+ ```10000```. cstore\_fdw compresses, creates skip indexes, and reads from disk
+  at the block granularity. Increasing this value helps with compression and results
+  in fewer reads from disk. However, higher values also reduce the probability of
+  skipping over unrelated row blocks.
 
 You can use PostgreSQL's ```COPY``` command to load or append data into the table.
 You can use PostgreSQL's ```ANALYZE table_name``` command to collect statistics
@@ -96,6 +96,19 @@ most efficient execution plan for each query.
 
 **Note.** We currently don't support updating table using INSERT, DELETE, and
 UPDATE commands.
+
+
+Updating from version 1.0 to 1.1
+---------------------------------
+
+To update your existing cstore_fdw installation from version 1.0 to 1.1, you can take
+the following steps:
+
+* Download and install cstore_fdw version 1.1 using instructions from the "Building"
+  section,
+* Restart the PostgreSQL server,
+* Run the ```ALTER EXTENSION cstore_fdw UPDATE;``` command.
+
 
 Example
 -------
@@ -137,11 +150,8 @@ CREATE FOREIGN TABLE customer_reviews
     similar_product_ids CHAR(10)[]
 )
 SERVER cstore_server
-OPTIONS(filename '/usr/local/pgsql/cstore/customer_reviews.cstore',
-        compression 'pglz');
+OPTIONS(compression 'pglz');
 ```
-
-**Note.** Make sure that you have created and set the permissions for the directory where you are storing the cstore files (In this case, it is ```/usr/local/pgsql/cstore/```).
 
 Next, we load data into the table:
 
@@ -191,16 +201,83 @@ ORDER BY
     title_length_bucket;
 ```
 
+
 Usage with CitusDB
 --------------------
 
-The example above illustrated how to load data into a PostgreSQL database running on a single
-host. However, sometimes your data is too large to analyze effectively on a single host.
-CitusDB is a product built by Citus Data that allows you to run a distributed PostgreSQL
-database to analyze your data using the power of multiple hosts. CitusDB is based on a 
-modern PostgreSQL version and allows you to easily install PostgreSQL extensions and 
-foreign data wrappers, including cstore_fdw. For an example of how to use cstore\_fdw with
-CitusDB see the [CitusDB documentation][citus-cstore-docs].
+The example above illustrated how to load data into a PostgreSQL database running
+on a single host. However, sometimes your data is too large to analyze effectively
+on a single host. CitusDB is a product built by Citus Data that allows you to run
+a distributed PostgreSQL database to analyze your data using the power of multiple
+hosts. CitusDB is based on a modern PostgreSQL version and allows you to easily
+install PostgreSQL extensions and foreign data wrappers, including cstore_fdw. For
+an example of how to use cstore\_fdw with CitusDB see the
+[CitusDB documentation][citus-cstore-docs].
+
+
+Using Skip Indexes
+------------------
+
+cstore_fdw partitions each column into multiple blocks. Skip indexes store minimum
+and maximum values for each of these blocks. While scanning the table, if min/max
+values of the block contradict the WHERE clause, then the block is completely
+skipped. This way, the query processes less data and hence finishes faster.
+
+To use skip indexes more efficiently, you should load the data after sorting it
+on a column that is commonly used in the WHERE clause. This ensures that there is
+a minimum overlap between blocks and the chance of them being skipped is higher.
+
+In practice, the data generally has an inherent dimension (for example a time field)
+on which it is naturally sorted. Usually, the queries also have a filter clause on
+that column (for example you want to query only the last week's data), and hence you
+don't need to sort the data in such cases.
+
+
+Uninstalling cstore_fdw
+-----------------------
+
+Before uninstalling the extension, first you need to drop all the cstore tables:
+
+    postgres=# DROP FOREIGN TABLE cstore_table_1;
+    ...
+    postgres=# DROP FOREIGN TABLE cstore_table_n;
+
+Then, you should drop the cstore server and extension:
+
+    postgres=# DROP SERVER cstore_server;
+    postgres=# DROP EXTENSION cstore_fdw;
+
+cstore\_fdw automatically creates some directories inside the PostgreSQL's data
+directory to store its files. To remove them, you can run:
+
+    $ rm -rf $PGDATA/cstore_fdw
+
+Then, you should remove cstore\_fdw from ```shared_preload_libraries``` in
+your ```postgresql.conf```:
+
+    shared_preload_libraries = ''    # (change requires restart)
+
+Finally, to uninstall the extension you can run the following command in the
+extension's source code directory. This will clean up all the files copied during
+the installation:
+
+    $ sudo PATH=/usr/local/pgsql/bin/:$PATH make uninstall
+
+
+Changeset
+---------
+
+### Version 1.1
+
+* (Feature) Make filename option optional, and use a default directory inside
+  $PGDATA to manage cstore tables.
+* (Feature) Automatically delete files on DROP FOREIGN TABLE.
+* (Fix) Return empty table if no data has been loaded. Previously, cstore_fdw
+  errored out.
+* (Fix) Fix overestimating relation column counts when planning.
+* (Feature) Added cstore\_table\_size(tablename) for getting the size of a cstore
+  table in bytes.
+
 
 Copyright
 ---------
@@ -216,3 +293,4 @@ engage @ citusdata.com.
 [status]: https://travis-ci.org/citusdata/cstore_fdw
 [citus-cstore-docs]: http://citusdata.com/docs/foreign-data#cstore-wrapper
 [coverage]: https://coveralls.io/r/citusdata/cstore_fdw
+
