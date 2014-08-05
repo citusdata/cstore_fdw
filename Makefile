@@ -11,7 +11,7 @@ OBJS = cstore.pb-c.o cstore_fdw.o cstore_writer.o cstore_reader.o \
        cstore_metadata_serialization.o
 
 EXTENSION = cstore_fdw
-DATA = cstore_fdw--1.0.sql
+DATA = cstore_fdw--1.1.sql cstore_fdw--1.0--1.1.sql
 
 REGRESS = create load query analyze data_types functions block_filtering drop
 EXTRA_CLEAN = cstore.pb-c.h cstore.pb-c.c data/*.cstore data/*.cstore.footer \
