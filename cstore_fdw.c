@@ -211,12 +211,14 @@ CStoreProcessUtility(Node *parseTree, const char *queryString,
 	if (nodeTag(parseTree) == T_CopyStmt)
 	{
 		CopyStmt *copyStatement = (CopyStmt *) parseTree;
-
-		Oid relationId = RangeVarGetRelid(copyStatement->relation,
-										  AccessShareLock, false);
-		if (copyStatement->is_from && CStoreTable(relationId))
+		if (copyStatement->is_from)
 		{
-			copyIntoCStoreTable = true;
+			Oid relationId = RangeVarGetRelid(copyStatement->relation,
+											  AccessShareLock, false);
+			if (CStoreTable(relationId))
+			{
+				copyIntoCStoreTable = true;
+			}
 		}
 	}
 
@@ -235,8 +237,8 @@ CStoreProcessUtility(Node *parseTree, const char *queryString,
 				List *tableNameList = (List *) lfirst(dropObjectCell);
 				RangeVar *rangeVar = makeRangeVarFromNameList(tableNameList);
 
-				Oid relationId = RangeVarGetRelid(rangeVar, AccessShareLock, false);
-				if (relationId)
+				Oid relationId = RangeVarGetRelid(rangeVar, AccessShareLock, true);
+				if (CStoreTable(relationId))
 				{
 					CStoreFdwOptions *cstoreFdwOptions = CStoreGetOptions(relationId);
 					tableFilename = cstoreFdwOptions->filename;
@@ -283,8 +285,14 @@ static bool
 CStoreTable(Oid relationId)
 {
 	bool cstoreTable = false;
+	char relationKind = 0;
 
-	char relationKind = get_rel_relkind(relationId);
+	if (relationId == InvalidOid)
+	{
+		return false;
+	}
+
+	relationKind = get_rel_relkind(relationId);
 	if (relationKind == RELKIND_FOREIGN_TABLE)
 	{
 		ForeignTable *foreignTable = GetForeignTable(relationId);
