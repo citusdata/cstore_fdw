@@ -1,7 +1,7 @@
 cstore_fdw
 ==========
 
-[![Build Status](http://img.shields.io/travis/citusdata/cstore_fdw/master.svg)][status]
+[![Build Status](https://travis-ci.org/citusdata/cstore_fdw.svg?branch=master)][status]
 [![Coverage](http://img.shields.io/coveralls/citusdata/cstore_fdw/master.svg)][coverage]
 
 This extension implements a columnar store for PostgreSQL. Columnar stores
