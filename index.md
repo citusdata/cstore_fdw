@@ -2,8 +2,8 @@
 title: cstore_fdw
 tagline: Fast columnar store for analytics with PostgreSQL
 layout: default
-zip_url: https://github.com/citusdata/cstore_fdw/archive/master.zip
-tar_url: https://github.com/citusdata/cstore_fdw/archive/master.tar.gz
+zip_url: https://github.com/citusdata/cstore_fdw/archive/v1.1.zip
+tar_url: https://github.com/citusdata/cstore_fdw/archive/v1.1.tar.gz
 ---
 
 Introducing `cstore_fdw`, the first [column-oriented][] store available for PostgreSQL. Using it will let you:
@@ -69,8 +69,7 @@ Have the best of all worlds… mix row- and column-based tables in the same DB:
 ```sql
 CREATE FOREIGN TABLE cstore_table
   (num integer, name text)
-SERVER cstore_server
-OPTIONS (filename '/var/tmp/testing.cstore');
+SERVER cstore_server;
 
 CREATE TABLE plain_table
   (num integer, name text);
