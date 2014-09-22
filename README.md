@@ -77,7 +77,11 @@ The following parameters can be set on a cstore foreign table object.
 
 * filename (optional): The absolute path to the location for storing table data.
   If you don't specify the filename option, cstore\_fdw will automatically
-  choose the $PGDATA/cstore\_fdw directory to store the files.
+  choose the $PGDATA/cstore\_fdw directory to store the files. If specified the 
+  value of this parameter will be used as a prefix for all files created to
+  store table data. For example, the value ```/cstore_fdw/my_table``` could result in
+  the files ```/cstore_fdw/my_table``` and ```/cstore_fdw/my_table.footer``` being used
+  to manage table data.
 * compression (optional): The compression used for compressing value streams.
   Valid options are ```none``` and ```pglz```. The default is ```none```.
 * stripe\_row\_count (optional): Number of rows per stripe. The default is
