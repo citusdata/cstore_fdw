@@ -45,7 +45,6 @@
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "parser/parsetree.h"
-//#include "nodes/print.h"
 
 
 /* local functions forward declarations */
