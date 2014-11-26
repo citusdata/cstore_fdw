@@ -13,6 +13,9 @@ select count(*) from cstore_table;
 insert into cstore_table values(1);
 select count(*) from cstore_table;
 
+insert into cstore_table default values;
+select count(*) from cstore_table;
+
 
 -- test inserting from another table succeed
 CREATE TABLE regular_table (a int);

@@ -19,6 +19,14 @@ select count(*) from cstore_table;
      0
 (1 row)
 
+insert into cstore_table default values;
+ERROR:  operation is not supported
+select count(*) from cstore_table;
+ count 
+-------
+     0
+(1 row)
+
 -- test inserting from another table succeed
 CREATE TABLE regular_table (a int);
 select count(*) from regular_table;
