@@ -1509,8 +1509,7 @@ CStoreAcquireSampleRows(Relation relation, int logLevel,
 
 
 /*
- * CStorePlanForeignModify checks in operation is supported and returns list of
- * attributes for foreign insert.
+ * CStorePlanForeignModify checks if operation is supported.
  * Only insert command with subquery (ie insert into <table> select ...) is
  * supported. Other forms of insert. delete and update commands are not supported.
  */
@@ -1520,34 +1519,12 @@ CStorePlanForeignModify(PlannerInfo *plannerInfo,
 						 Index resultRelation,
 						 int subplanIndex)
 {
-
-	List *targetAttrs = NIL;
 	bool operationSupported = false;
 
 	if (plan->operation == CMD_INSERT)
 	{
-		RangeTblEntry *tableEntry = NULL;
-		Relation relation = NULL;
-		TupleDesc tupleDescriptor = NULL;
-		int attrIndex = 0;
 		ListCell *tableCell = NULL;
 		Query *query = NULL;
-
-		tableEntry = planner_rt_fetch(resultRelation, plannerInfo);
-
-		relation = heap_open(tableEntry->relid, NoLock);
-		tupleDescriptor = RelationGetDescr(relation);
-
-		for (attrIndex = 0; attrIndex < tupleDescriptor->natts; attrIndex++)
-		{
-			Form_pg_attribute attr = tupleDescriptor->attrs[attrIndex];
-			if (!attr->attisdropped)
-			{
-				targetAttrs = lappend_int(targetAttrs, attrIndex + 1);
-			}
-		}
-
-		heap_close(relation, NoLock);
 
 		/*
 		 * Only insert operation with select subquery is supported
@@ -1575,7 +1552,7 @@ CStorePlanForeignModify(PlannerInfo *plannerInfo,
 								"operation is supported.")));
 	}
 
-	return list_make1(targetAttrs);
+	return NIL;
 }
 
 
@@ -1587,8 +1564,8 @@ CStoreBeginForeignModify(ModifyTableState *modifyTableState,
 {
 	Oid  foreignTableOid = InvalidOid;
 	CStoreFdwOptions *cstoreFdwOptions = NULL;
-	TableWriteState *writeState = NULL;
 	TupleDesc tupleDescriptor = NULL;
+	TableWriteState *writeState = NULL;
 
 	/* if Explain with no Analyze, do nothing */
 	if (executorFlags & EXEC_FLAG_EXPLAIN_ONLY)
@@ -1620,6 +1597,7 @@ CStoreExecForeignInsert(EState *executorState, ResultRelInfo *relationInfo,
 						TupleTableSlot *tupleSlot, TupleTableSlot *planSlot)
 {
 	TableWriteState *writeState = (TableWriteState*) relationInfo->ri_FdwState;
+
 	Assert(writeState != NULL)
 
 	slot_getallattrs(tupleSlot);
