@@ -39,12 +39,12 @@
 #include "optimizer/planmain.h"
 #include "optimizer/restrictinfo.h"
 #include "optimizer/var.h"
+#include "parser/parsetree.h"
 #include "tcop/utility.h"
 #include "utils/builtins.h"
 #include "utils/memutils.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
-#include "parser/parsetree.h"
 
 
 /* local functions forward declarations */
@@ -89,20 +89,19 @@ static bool CStoreAnalyzeForeignTable(Relation relation,
 static int CStoreAcquireSampleRows(Relation relation, int logLevel,
 								   HeapTuple *sampleRows, int targetRowCount,
 								   double *totalRowCount, double *totalDeadRowCount);
-static List *CStorePlanForeignModify(PlannerInfo *root,
-									 ModifyTable *plan,
-									 Index resultRelation,
-									 int subplan_index);
-static void CStoreBeginForeignModify(ModifyTableState *mtstate,
-									 ResultRelInfo *rinfo,
-									 List *fdw_private,
-									 int subplan_index,
-									 int eflags);
-static TupleTableSlot * CStoreExecForeignInsert(EState *estate,
-												ResultRelInfo *rinfo,
-												TupleTableSlot *slot,
+static List * CStorePlanForeignModify(PlannerInfo *plannerInfo, ModifyTable *plan,
+									 Index resultRelation, int subplanIndex);
+static void CStoreBeginForeignModify(ModifyTableState *modifyTableState,
+									 ResultRelInfo *relationInfo,
+									 List *fdwPrivate, int subplanIndex,
+									 int executorflags);
+static TupleTableSlot * CStoreExecForeignInsert(EState *executorState,
+												ResultRelInfo *relationInfo,
+												TupleTableSlot *tupleSlot,
 												TupleTableSlot *planSlot);
-static void CStoreEndForeignModify(EState *estate, ResultRelInfo *rinfo);
+static void CStoreEndForeignModify(EState *executorState,
+								   ResultRelInfo *relationInfo);
+
 
 /* declarations for dynamic loading */
 PG_MODULE_MAGIC;
@@ -1508,35 +1507,40 @@ CStoreAcquireSampleRows(Relation relation, int logLevel,
 	return sampleRowCount;
 }
 
+
 /*
- * CStorePlanForeignModify returns list of attributes for foreign modify.
- * Only insert command is supported, delete and update commands are not
- * supported by cstore_fdw.
+ * CStorePlanForeignModify checks in operation is supported and returns list of
+ * attributes for foreign insert.
+ * Only insert command with subquery (ie insert into <table> select ...) is
+ * supported. Other forms of insert. delete and update commands are not supported.
  */
 static List *
-CStorePlanForeignModify(PlannerInfo *root,
+CStorePlanForeignModify(PlannerInfo *plannerInfo,
 						 ModifyTable *plan,
 						 Index resultRelation,
-						 int subplan_index)
+						 int subplanIndex)
 {
-	RangeTblEntry *rte = planner_rt_fetch(resultRelation, root);
+
 	List *targetAttrs = NIL;
 	bool operationSupported = false;
 
 	if (plan->operation == CMD_INSERT)
 	{
-		TupleDesc tupleDesc;
+		RangeTblEntry *tableEntry = NULL;
+		Relation relation = NULL;
+		TupleDesc tupleDescriptor = NULL;
 		int attrIndex = 0;
-		ListCell *listIterator;
-		Query *query;
-		Relation relation;
+		ListCell *tableCell = NULL;
+		Query *query = NULL;
 
-		relation = heap_open(rte->relid, NoLock);
-		tupleDesc = RelationGetDescr(relation);
+		tableEntry = planner_rt_fetch(resultRelation, plannerInfo);
 
-		for (attrIndex = 0; attrIndex < tupleDesc->natts; attrIndex++)
+		relation = heap_open(tableEntry->relid, NoLock);
+		tupleDescriptor = RelationGetDescr(relation);
+
+		for (attrIndex = 0; attrIndex < tupleDescriptor->natts; attrIndex++)
 		{
-			Form_pg_attribute attr = tupleDesc->attrs[attrIndex];
+			Form_pg_attribute attr = tupleDescriptor->attrs[attrIndex];
 			if (!attr->attisdropped)
 			{
 				targetAttrs = lappend_int(targetAttrs, attrIndex + 1);
@@ -1545,69 +1549,57 @@ CStorePlanForeignModify(PlannerInfo *root,
 
 		heap_close(relation, NoLock);
 
-		query = root->parse;
-
-		foreach(listIterator, query->rtable)
+		/*
+		 * Only insert operation with select subquery is supported
+		 * update and delete operations are not supported
+		 */
+		query = plannerInfo->parse;
+		foreach(tableCell, query->rtable)
 		{
-			RangeTblEntry *rte = lfirst(listIterator);
+			RangeTblEntry *tableEntry = lfirst(tableCell);
 
-			if (rte->rtekind == RTE_SUBQUERY &&
-				rte->subquery != NULL &&
-				rte->subquery->commandType == CMD_SELECT)
+			if (tableEntry->rtekind == RTE_SUBQUERY &&
+					tableEntry->subquery != NULL &&
+					tableEntry->subquery->commandType == CMD_SELECT)
 			{
 				operationSupported = true;
 				break;
 			}
 		}
 	}
-
-	/*
-	 * Only insert operation with select subquery is supported
-	 * update and delete operations are not supported
-	 */
-
 	if (!operationSupported)
 	{
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						errmsg("operation is not supported")));
+						errmsg("operation is not supported"),
+						errhint("Only 'insert into <cstore_table> select ...' "
+								"operation is supported.")));
 	}
 
 	return list_make1(targetAttrs);
 }
 
-/*
- * CStoreBeginForeignModify prepares cstore table for insert operation.
- */
+
+/* CStoreBeginForeignModify prepares cstore table for insert operation. */
 static void
-CStoreBeginForeignModify(ModifyTableState *mtstate,
-						 ResultRelInfo *rinfo,
-						 List *fdw_private,
-						 int subplan_index,
-						 int eflags)
+CStoreBeginForeignModify(ModifyTableState *modifyTableState,
+						 ResultRelInfo *relationInfo, List *fdwPrivate,
+						 int subplanIndex, int executorFlags)
 {
-	Oid  foreignTableOid;
+	Oid  foreignTableOid = InvalidOid;
 	CStoreFdwOptions *cstoreFdwOptions = NULL;
 	TableWriteState *writeState = NULL;
 	TupleDesc tupleDescriptor = NULL;
 
-	/*
-	 * Do nothing in EXPLAIN (no ANALYZE) case.  resultRelInfo->ri_FdwState
-	 * stays NULL.
-	 */
-	if (eflags & EXEC_FLAG_EXPLAIN_ONLY)
-		return;
-
-	if (mtstate->operation != CMD_INSERT)
+	/* if Explain with no Analyze, do nothing */
+	if (executorFlags & EXEC_FLAG_EXPLAIN_ONLY)
 	{
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						errmsg("operation is not supported")));
+		return;
 	}
+	Assert (modifyTableState->operation == CMD_INSERT);
 
-	foreignTableOid = RelationGetRelid(rinfo->ri_RelationDesc);
-
+	foreignTableOid = RelationGetRelid(relationInfo->ri_RelationDesc);
 	cstoreFdwOptions = CStoreGetOptions(foreignTableOid);
-
-	tupleDescriptor = RelationGetDescr(rinfo->ri_RelationDesc);
+	tupleDescriptor = RelationGetDescr(relationInfo->ri_RelationDesc);
 
 	writeState = CStoreBeginWrite(cstoreFdwOptions->filename,
 								  cstoreFdwOptions->compressionType,
@@ -1615,46 +1607,36 @@ CStoreBeginForeignModify(ModifyTableState *mtstate,
 								  cstoreFdwOptions->blockRowCount,
 								  tupleDescriptor);
 
-	rinfo->ri_FdwState = (void *) writeState;
+	relationInfo->ri_FdwState = (void *) writeState;
 }
 
+
 /*
- * CStoreExecForeignInsert inserts a single row to cstore table.
- * Data values are retained in memory cache until cache is full or
- * CStoreEndForeignModify is called notifying end of insert operation.
- * Function returns inserted row's data values.
+ * CStoreExecForeignInsert inserts a single row to cstore table
+ * and returns inserted row's data values.
  */
 static TupleTableSlot *
-CStoreExecForeignInsert(EState *estate,
-						ResultRelInfo *rinfo,
-						TupleTableSlot *slot,
-						TupleTableSlot *planSlot)
+CStoreExecForeignInsert(EState *executorState, ResultRelInfo *relationInfo,
+						TupleTableSlot *tupleSlot, TupleTableSlot *planSlot)
 {
-	TableWriteState *writeState = NULL;
+	TableWriteState *writeState = (TableWriteState*) relationInfo->ri_FdwState;
+	Assert(writeState != NULL)
 
-	writeState = (TableWriteState*) rinfo->ri_FdwState;
-	if (writeState == NULL)
-	{
-		ereport(ERROR, (errcode(ERRCODE_FDW_ERROR),
-				errmsg("can not acquire cstore table for writing")));
-	}
-	slot_getallattrs(slot);
+	slot_getallattrs(tupleSlot);
 
-	CStoreWriteRow(writeState, slot->tts_values, slot->tts_isnull);
+	CStoreWriteRow(writeState, tupleSlot->tts_values, tupleSlot->tts_isnull);
 
-	return slot;
+	return tupleSlot;
 }
 
-/*
- * CStoreEndForeignModify ends the insert operation. It is called after
- * all rows are inserted. It flushes all rows in memory cache to disk.
- */
-static void
-CStoreEndForeignModify(EState *estate, ResultRelInfo *rinfo)
-{
-	TableWriteState *writeState = (TableWriteState*) rinfo->ri_FdwState;
 
-	/* writeState (ri_FdwState) is left NULL during 'explain' queries */
+/* CStoreEndForeignModify ends the current insert operation. */
+static void
+CStoreEndForeignModify(EState *executorState, ResultRelInfo *relationInfo)
+{
+	TableWriteState *writeState = (TableWriteState*) relationInfo->ri_FdwState;
+
+	/* writeState is NULL during Explain queries */
 	if (writeState != NULL)
 	{
 		CStoreEndWrite(writeState);
