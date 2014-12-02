@@ -30,7 +30,7 @@ endif
 # example: /usr/local/pgsql/bin/pg_config or /usr/lib/postgresql/9.3/bin/pg_config
 #
 
-PG_CONFIG = pg_config
+PG_CONFIG = /usr/local/pgsql/bin/pg_config
 PGXS := $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
 
@@ -43,7 +43,7 @@ ifeq (,$(findstring $(MAJORVERSION), 9.3 9.4))
 endif
 
 cstore.pb-c.c: cstore.proto
-	protoc-c --c_out=. cstore.proto
+	/usr/local/bin/protoc-c --c_out=. cstore.proto
 
 installcheck: remove_cstore_files
 

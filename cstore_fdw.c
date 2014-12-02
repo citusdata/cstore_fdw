@@ -99,8 +99,7 @@ static TupleTableSlot * CStoreExecForeignInsert(EState *executorState,
 												ResultRelInfo *relationInfo,
 												TupleTableSlot *tupleSlot,
 												TupleTableSlot *planSlot);
-static void CStoreEndForeignModify(EState *executorState,
-								   ResultRelInfo *relationInfo);
+static void CStoreEndForeignModify(EState *executorState, ResultRelInfo *relationInfo);
 
 
 /* declarations for dynamic loading */
@@ -1509,15 +1508,14 @@ CStoreAcquireSampleRows(Relation relation, int logLevel,
 
 
 /*
- * CStorePlanForeignModify checks if operation is supported.
- * Only insert command with subquery (ie insert into <table> select ...) is
- * supported. Other forms of insert. delete and update commands are not supported.
+ * CStorePlanForeignModify checks if operation is supported. Only insert
+ * command with subquery (ie insert into <table> select ...) is supported.
+ * Other forms of insert, delete, and update commands are not supported. It
+ * throws an error when the command is not supported.
  */
 static List *
-CStorePlanForeignModify(PlannerInfo *plannerInfo,
-						 ModifyTable *plan,
-						 Index resultRelation,
-						 int subplanIndex)
+CStorePlanForeignModify(PlannerInfo *plannerInfo, ModifyTable *plan,
+						Index resultRelation, int subplanIndex)
 {
 	bool operationSupported = false;
 
@@ -1536,20 +1534,19 @@ CStorePlanForeignModify(PlannerInfo *plannerInfo,
 			RangeTblEntry *tableEntry = lfirst(tableCell);
 
 			if (tableEntry->rtekind == RTE_SUBQUERY &&
-					tableEntry->subquery != NULL &&
-					tableEntry->subquery->commandType == CMD_SELECT)
+				tableEntry->subquery != NULL &&
+				tableEntry->subquery->commandType == CMD_SELECT)
 			{
 				operationSupported = true;
 				break;
 			}
 		}
 	}
+
 	if (!operationSupported)
 	{
 		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						errmsg("operation is not supported"),
-						errhint("Only 'insert into <cstore_table> select ...' "
-								"operation is supported.")));
+						errmsg("operation is not supported")));
 	}
 
 	return NIL;
@@ -1572,6 +1569,7 @@ CStoreBeginForeignModify(ModifyTableState *modifyTableState,
 	{
 		return;
 	}
+
 	Assert (modifyTableState->operation == CMD_INSERT);
 
 	foreignTableOid = RelationGetRelid(relationInfo->ri_RelationDesc);
