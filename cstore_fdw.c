@@ -1525,8 +1525,8 @@ CStorePlanForeignModify(PlannerInfo *plannerInfo, ModifyTable *plan,
 		Query *query = NULL;
 
 		/*
-		 * Only insert operation with select subquery is supported
-		 * update and delete operations are not supported
+		 * Only insert operation with select subquery is supported. Other forms
+		 * of insert, update, and delete operations are not supported
 		 */
 		query = plannerInfo->parse;
 		foreach(tableCell, query->rtable)
