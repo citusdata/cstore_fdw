@@ -1,0 +1,32 @@
+--
+-- Test loading data into cstore_fdw tables.
+--
+CREATE FOREIGN TABLE test_contestant(handle TEXT, birthdate DATE, rating INT,
+	percentile FLOAT, country CHAR(3), achievements TEXT[])
+	SERVER cstore_server
+	OPTIONS(filename '@abs_srcdir@/data/test_contestant.cstore');
+
+CREATE TEMP TABLE test_contestant_temp(handle TEXT, birthdate DATE, rating INT,
+	percentile FLOAT, country CHAR(3), achievements TEXT[]);
+	
+-- load table data from file
+COPY test_contestant FROM '@abs_srcdir@/data/contestants.1.csv' WITH CSV;
+
+-- export using COPY table TO ...
+COPY test_contestant TO '@abs_srcdir@/results/test_contestant_raw';
+
+-- export using COPY (SELECT * FROM table) TO ...
+COPY (select * from test_contestant) TO '@abs_srcdir@/results/test_contestant_select_from';
+
+-- load files 
+COPY test_contestant_temp FROM '@abs_srcdir@/results/test_contestant_raw';
+
+SELECT * from test_contestant_temp;
+
+DELETE from test_contestant_temp;
+
+COPY test_contestant_temp FROM '@abs_srcdir@/results/test_contestant_select_from';
+
+SELECT * from test_contestant_temp;
+
+DROP FOREIGN TABLE test_contestant CASCADE;
