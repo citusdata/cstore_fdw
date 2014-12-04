@@ -5,7 +5,7 @@
 
 MODULE_big = cstore_fdw
 
-PG_CPPFLAGS = --std=c99
+PG_CPPFLAGS = --std=c99 -g
 SHLIB_LINK = -lprotobuf-c
 OBJS = cstore.pb-c.o cstore_fdw.o cstore_writer.o cstore_reader.o \
        cstore_metadata_serialization.o
@@ -13,11 +13,11 @@ OBJS = cstore.pb-c.o cstore_fdw.o cstore_writer.o cstore_reader.o \
 EXTENSION = cstore_fdw
 DATA = cstore_fdw--1.1.sql cstore_fdw--1.0--1.1.sql
 
-REGRESS = create load query analyze data_types functions block_filtering drop insert
+REGRESS = create load query analyze data_types functions block_filtering drop insert copyto
 EXTRA_CLEAN = cstore.pb-c.h cstore.pb-c.c data/*.cstore data/*.cstore.footer \
               sql/block_filtering.sql sql/create.sql sql/data_types.sql sql/load.sql \
-              expected/block_filtering.out expected/create.out expected/data_types.out \
-              expected/load.out
+              sql/copyto.sql expected/block_filtering.out expected/create.out \
+              expected/data_types.out expected/load.out expected/copyto.out
 
 ifeq ($(enable_coverage),yes)
 	PG_CPPFLAGS += --coverage
@@ -30,7 +30,7 @@ endif
 # example: /usr/local/pgsql/bin/pg_config or /usr/lib/postgresql/9.3/bin/pg_config
 #
 
-PG_CONFIG = pg_config
+PG_CONFIG = /usr/local/pgsql/bin/pg_config
 PGXS := $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
 
@@ -43,7 +43,7 @@ ifeq (,$(findstring $(MAJORVERSION), 9.3 9.4))
 endif
 
 cstore.pb-c.c: cstore.proto
-	protoc-c --c_out=. cstore.proto
+	/usr/local/bin/protoc-c --c_out=. cstore.proto
 
 installcheck: remove_cstore_files
 
