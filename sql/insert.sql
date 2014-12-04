@@ -2,25 +2,25 @@
 -- Testing insert on cstore_fdw tables.
 --
 
-CREATE FOREIGN TABLE test_cstore_table (a int) SERVER cstore_server;
-
+CREATE FOREIGN TABLE test_insert_command (a int) SERVER cstore_server;
 
 -- test single row inserts fail
-select count(*) from test_cstore_table;
-insert into test_cstore_table values(1);
-select count(*) from test_cstore_table;
+select count(*) from test_insert_command;
+insert into test_insert_command values(1);
+select count(*) from test_insert_command;
 
-insert into test_cstore_table default values;
-select count(*) from test_cstore_table;
+insert into test_insert_command default values;
+select count(*) from test_insert_command;
 
 -- test inserting from another table succeed
-CREATE TABLE test_regular_table (a int);
-select count(*) from test_regular_table;
-insert into test_regular_table values(1);
-select count(*) from test_regular_table;
+CREATE TABLE test_insert_command_data (a int);
 
-insert into test_cstore_table select * from test_regular_table;
-select count(*) from test_cstore_table;
+select count(*) from test_insert_command_data;
+insert into test_insert_command_data values(1);
+select count(*) from test_insert_command_data;
 
-drop table test_regular_table;
-drop foreign table test_cstore_table;
+insert into test_insert_command select * from test_insert_command_data;
+select count(*) from test_insert_command;
+
+drop table test_insert_command_data;
+drop foreign table test_insert_command;
