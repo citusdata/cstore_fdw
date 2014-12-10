@@ -242,7 +242,6 @@ typedef struct TableReadState
 } TableReadState;
 
 
-
 /* TableWriteState represents state of a cstore file write operation. */
 typedef struct TableWriteState
 {
@@ -253,7 +252,6 @@ typedef struct TableWriteState
 	TupleDesc tupleDescriptor;
 	FmgrInfo **comparisonFunctionArray;
 	uint64 currentFileOffset;
-
 
 	MemoryContext stripeWriteContext;
 	StripeData *stripeData;

@@ -92,9 +92,8 @@ static int CStoreAcquireSampleRows(Relation relation, int logLevel,
 static List * CStorePlanForeignModify(PlannerInfo *plannerInfo, ModifyTable *plan,
 									 Index resultRelation, int subplanIndex);
 static void CStoreBeginForeignModify(ModifyTableState *modifyTableState,
-									 ResultRelInfo *relationInfo,
-									 List *fdwPrivate, int subplanIndex,
-									 int executorflags);
+									 ResultRelInfo *relationInfo, List *fdwPrivate,
+									 int subplanIndex, int executorflags);
 static TupleTableSlot * CStoreExecForeignInsert(EState *executorState,
 												ResultRelInfo *relationInfo,
 												TupleTableSlot *tupleSlot,
@@ -1526,7 +1525,7 @@ CStorePlanForeignModify(PlannerInfo *plannerInfo, ModifyTable *plan,
 
 		/*
 		 * Only insert operation with select subquery is supported. Other forms
-		 * of insert, update, and delete operations are not supported
+		 * of insert, update, and delete operations are not supported.
 		 */
 		query = plannerInfo->parse;
 		foreach(tableCell, query->rtable)
