@@ -53,16 +53,15 @@ static void CStoreProcessUtility(Node *parseTree, const char *queryString,
 								 ProcessUtilityContext context,
 								 ParamListInfo paramListInfo,
 								 DestReceiver *destReceiver, char *completionTag);
-
-static void CStoreProcessCopyCommand(Node* parseTree, const char* queryString,
+static void CStoreProcessCopyCommand(CopyStmt *copyStatement, const char *queryString,
 									 char *completionTag, bool *commandHandled);
-
-static void CStoreProcessDropCommand(Node *parseTree, List **droppedFiles,
+static void CStoreProcessDropCommand(DropStmt *dropStatement, List **droppedFiles,
 									 bool *commandHandled);
-
+static void CheckSuperuserPrivilegesForCopy(const CopyStmt* copyStatement);
 static bool CStoreTable(Oid relationId);
 static uint64 CopyIntoCStoreTable(const CopyStmt *copyStatement,
 								  const char *queryString);
+static uint64 CopyFromCStoreTable(CopyStmt* copyStatement, const char* queryString);
 static void CreateCStoreDatabaseDirectory(Oid databaseOid);
 static bool DirectoryExists(StringInfo directoryName);
 static void CreateDirectory(StringInfo directoryName);
@@ -109,7 +108,6 @@ static TupleTableSlot * CStoreExecForeignInsert(EState *executorState,
 												TupleTableSlot *planSlot);
 static void CStoreEndForeignModify(EState *executorState, ResultRelInfo *relationInfo);
 
-static void CheckSuperuserPrivileges(const CopyStmt* copyStatement);
 
 
 /* declarations for dynamic loading */
@@ -211,13 +209,12 @@ cstore_ddl_event_end_trigger(PG_FUNCTION_ARGS)
 }
 
 
-
 /*
  * CStoreProcessUtility is the hook for handling utility commands. This function
- * intercepts "COPY cstore_table FROM" statements, and redirects execution to
- * CopyIntoCStoreTable function. For DROP FOREIGN TABLE commands, it stores the
- * file path used for the table before calling the previous/standard utility
- * command and then deletes the file once the drop is successful. For all other
+ * intercepts "COPY cstore_table FROM/TO" statements, and redirects execution to
+ * CStoreProcessCopyCommand function. For DROP FOREIGN TABLE commands, it stores the
+ * file path(s) used for the table before calling the previous/standard utility
+ * command and then deletes the file(s) once the drop is successful. For all other
  * utility statements, the function calls the previous utility hook or the
  * standard utility command.
  */
@@ -229,21 +226,22 @@ CStoreProcessUtility(Node *parseTree, const char *queryString,
 	List *droppedTables = NIL;
 	bool commandHandled = false;
 
-
 	/* Check if the statement is a "COPY cstore_table FROM ..."
 	 * or "COPY cstore_table TO ...." statement.
 	 */
 	if (nodeTag(parseTree) == T_CopyStmt)
 	{
-		CStoreProcessCopyCommand(parseTree, queryString, completionTag, &commandHandled);
+		CStoreProcessCopyCommand((CopyStmt *) parseTree, queryString,
+								 completionTag, &commandHandled);
 	}
-	/*
-	 * Check if the statement is a "DROP FOREIGN TABLE cstore_table ..."
-	 * statement and store the filename for that table if it is.
-	 */
 	else if (nodeTag(parseTree) == T_DropStmt)
 	{
-		CStoreProcessDropCommand(parseTree, &droppedTables, &commandHandled);
+		/*
+		 * Check if the statement is a "DROP FOREIGN TABLE cstore_table ..."
+		 * statement and store the filename for that table if it is.
+		 */
+		CStoreProcessDropCommand((DropStmt*) parseTree, &droppedTables,
+				                 &commandHandled);
 	}
 
 	if (!commandHandled)
@@ -276,20 +274,23 @@ CStoreProcessUtility(Node *parseTree, const char *queryString,
 }
 
 
+/*
+ * CStoreProcessCopyCommand handles COPY <cstore_table> FROM/TO ... statements. It
+ * determines if the relation in COPY statement is a cstore table then it forwards
+ * execution to appropriate function. It sets commandHandled flag to true if it
+ * executes the command, sets it to false otherwise.
+ */
 static void
-CStoreProcessCopyCommand(Node* parseTree, const char* queryString, char *completionTag, bool *commandHandled)
+CStoreProcessCopyCommand(CopyStmt *copyStatement, const char* queryString,
+						 char *completionTag, bool *commandHandled)
 {
-	CopyStmt *copyStatement = NULL;
 	bool cstoreTable = false;
 	uint64 processedCount = 0;
+	bool commandDone = false;
 
 	/* Check if the statement is a "COPY cstore_table FROM ..."
 	 * or "COPY cstore_table TO ...." statement.
 	 */
-	Assert(nodeTag(parseTree) == T_CopyStmt);
-	copyStatement = (CopyStmt *) parseTree;
-
-	*commandHandled = false;
 
 	if (copyStatement->relation != NULL)
 	{
@@ -298,78 +299,41 @@ CStoreProcessCopyCommand(Node* parseTree, const char* queryString, char *complet
 		cstoreTable = CStoreTable(relationId);
 	}
 
-
-
-	if (copyStatement->is_from && cstoreTable)
+	if (cstoreTable)
 	{
-		processedCount = CopyIntoCStoreTable((CopyStmt *) parseTree, queryString);
-		*commandHandled = true;
-	}
-	else if (!copyStatement->is_from && cstoreTable)
-	{
-		/*
-		 * Re-write query to be in form of
-		 * "COPY (SELECT * FROM <cstore_table>) TO .....".
-		 */
-		RangeVar *relation = NULL;
-		char *relationName = NULL;
-		char *qualRelName = NULL;
-		List *queryList = NIL;
-		ListCell *lc = NULL;
-		StringInfo newQuerySubstring = makeStringInfo();
-
-		if (copyStatement->attlist != NIL)
+		if (copyStatement->is_from)
 		{
-			ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-							errmsg("copy column list is not supported"),
-							errhint("use 'copy select <columns> from <table> "
-									"to ...' instead")));
+			processedCount = CopyIntoCStoreTable(copyStatement, queryString);
 		}
-
-		relation = copyStatement->relation;
-		relationName = copyStatement->relation->relname;
-
-		qualRelName = quote_qualified_identifier(relation->schemaname,
-												 relation->relname);
-
-		appendStringInfo(newQuerySubstring, "select * from %s", qualRelName);
-
-		queryList = raw_parser(newQuerySubstring->data);
-
-		foreach (lc, queryList)
+		else
 		{
-			Node *parsedQuery = lfirst(lc);
-
-			/* take the first parse tree */
-			copyStatement->query = parsedQuery;
-			break;
+			processedCount = CopyFromCStoreTable(copyStatement, queryString);
 		}
-
-		/*
-		 * Set the relation field to NULL so that COPY command works on
-		 * query field instead.
-		 */
-		copyStatement->relation = NULL;
-
-		DoCopy((CopyStmt*) parseTree, queryString, &processedCount);
-		*commandHandled = true;
+		commandDone = true;
 	}
 
-	if (*commandHandled && completionTag != NULL)
+	if (commandDone && completionTag != NULL)
 	{
 		snprintf(completionTag, COMPLETION_TAG_BUFSIZE, "COPY " UINT64_FORMAT,
 				 processedCount);
 	}
+
+	*commandHandled = commandDone;
 }
 
 
+/*
+ * CStoreProcessDropCommand handles DROP statement. It extracts and returns the
+ * list of cstore file names from DROP table list. Disk files are not erased in
+ * this function. droppedFiles parameter is set to NIL if there is no cstore table
+ * specified in DROP statement. commandHandled parameter is always set to false.
+ */
 static void
-CStoreProcessDropCommand(Node *parseTree, List **droppedFiles,  bool *commandHandled)
+CStoreProcessDropCommand(DropStmt *dropStatement, List **droppedFiles,
+					  	 bool *commandHandled)
 {
-	bool dropCStoreTable = false;
 	List *fileList = NIL;
 
-	DropStmt* dropStatement = (DropStmt*) parseTree;
 	if (dropStatement->removeType == OBJECT_FOREIGN_TABLE)
 	{
 		ListCell *dropObjectCell = NULL;
@@ -385,13 +349,43 @@ CStoreProcessDropCommand(Node *parseTree, List **droppedFiles,  bool *commandHan
 				fileList = lappend(fileList, cstoreFdwOptions->filename);
 
 				/* mark that this is a drop command for a cstore table */
-				dropCStoreTable = true;
 			}
 		}
 	}
 
 	*commandHandled = false;
 	*droppedFiles = fileList;
+}
+
+
+/*
+ * CheckSuperuserPrivileges checks if superuser privilege is required by
+ * copy operation and reports error if user does not have superuser rights.
+ */
+static void
+CheckSuperuserPrivilegesForCopy(const CopyStmt* copyStatement)
+{
+	/*
+	 * We disallow copy from file or program except to superusers. These checks
+	 * are based on the checks in DoCopy() function of copy.c.
+	 */
+	if (copyStatement->filename != NULL && !superuser())
+	{
+		if (copyStatement->is_program)
+		{
+			ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+					 errmsg("must be superuser to COPY to or from a program"),
+					 errhint("Anyone can COPY to stdout or from stdin. "
+							 "psql's \\copy command also works for anyone.")));
+		}
+		else
+		{
+			ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+					 errmsg("must be superuser to COPY to or from a file"),
+					 errhint("Anyone can COPY to stdout or from stdin. "
+							 "psql's \\copy command also works for anyone.")));
+		}
+	}
 }
 
 
@@ -459,7 +453,7 @@ CopyIntoCStoreTable(const CopyStmt *copyStatement, const char *queryString)
 	}
 
 	/* Only superuser can copy from or to local file */
-	CheckSuperuserPrivileges(copyStatement);
+	CheckSuperuserPrivilegesForCopy(copyStatement);
 
 	Assert(copyStatement->relation != NULL);
 
@@ -526,6 +520,63 @@ CopyIntoCStoreTable(const CopyStmt *copyStatement, const char *queryString)
 	heap_close(relation, ExclusiveLock);
 
 	return processedRowCount;
+}
+
+
+/*
+ * CopyFromCStoreTable handles a "COPY cstore_table TO ..." statement. Statement
+ * is converted to "COPY (SELECT * FROM cstore_table) TO ..." and forwarded to
+ * postgres native COPY handler. Function returns number of files copied to external
+ * stream. Copying selected columns from cstore table is not currently supported.
+ */
+static uint64
+CopyFromCStoreTable(CopyStmt* copyStatement, const char* queryString)
+{
+	/*
+	 * Re-write query to be in form of
+	 * "COPY (SELECT * FROM <cstore_table>) TO .....".
+	 */
+	RangeVar *relation = NULL;
+	char *relationName = NULL;
+	char *qualifiedName = NULL;
+	List *queryList = NIL;
+	ListCell *lc = NULL;
+	uint64 processedCount = 0;
+	StringInfo newQuerySubstring = makeStringInfo();
+
+	if (copyStatement->attlist != NIL)
+	{
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+				        errmsg("copy column list is not supported"),
+						errhint("use 'copy (select <columns> from <table>) to "
+								"...' instead")));
+	}
+
+	relation = copyStatement->relation;
+	relationName = copyStatement->relation->relname;
+	qualifiedName = quote_qualified_identifier(relation->schemaname,
+											   relation->relname);
+	appendStringInfo(newQuerySubstring, "select * from %s", qualifiedName);
+	queryList = raw_parser(newQuerySubstring->data);
+	foreach (lc, queryList)
+	{
+		Node *parsedQuery = lfirst(lc);
+
+		/* take the first parse tree */
+		copyStatement->query = parsedQuery;
+		break;
+	}
+
+	Assert(copyStatement->query != NULL);
+
+	/*
+	 * Set the relation field to NULL so that COPY command works on
+	 * query field instead.
+	 */
+	copyStatement->relation = NULL;
+	DoCopy(copyStatement, queryString, &processedCount);
+
+	return processedCount;
 }
 
 
@@ -1703,36 +1754,5 @@ CStoreEndForeignModify(EState *executorState, ResultRelInfo *relationInfo)
 	if (writeState != NULL)
 	{
 		CStoreEndWrite(writeState);
-	}
-}
-
-
-/*
- * CheckSuperuserPrivileges checks if superuser privilege is required by
- * copy operation and reports error if user does not have superuser rights.
- */
-static void
-CheckSuperuserPrivileges(const CopyStmt* copyStatement)
-{
-	/*
-	 * We disallow copy from file or program except to superusers. These checks
-	 * are based on the checks in DoCopy() function of copy.c.
-	 */
-	if (copyStatement->filename != NULL && !superuser())
-	{
-		if (copyStatement->is_program)
-		{
-			ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-					 errmsg("must be superuser to COPY to or from a program"),
-					 errhint("Anyone can COPY to stdout or from stdin. "
-							 "psql's \\copy command also works for anyone.")));
-		}
-		else
-		{
-			ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-					 errmsg("must be superuser to COPY to or from a file"),
-					 errhint("Anyone can COPY to stdout or from stdin. "
-							 "psql's \\copy command also works for anyone.")));
-		}
 	}
 }
