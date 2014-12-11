@@ -53,15 +53,18 @@ static void CStoreProcessUtility(Node *parseTree, const char *queryString,
 								 ProcessUtilityContext context,
 								 ParamListInfo paramListInfo,
 								 DestReceiver *destReceiver, char *completionTag);
+static void CallPreviousProcessUtility(Node* parseTree, const char* queryString,
+		                   ProcessUtilityContext context, ParamListInfo paramListInfo,
+						   DestReceiver* destReceiver, char* completionTag);
 static void CStoreProcessCopyCommand(CopyStmt *copyStatement, const char *queryString,
-									 char *completionTag, bool *commandHandled);
-static void CStoreProcessDropCommand(DropStmt *dropStatement, List **droppedFiles,
-									 bool *commandHandled);
+									 char *completionTag);
+static List * DropppedCStoreFilenameList(DropStmt *dropStatement);
 static void CheckSuperuserPrivilegesForCopy(const CopyStmt* copyStatement);
 static bool CStoreTable(Oid relationId);
+static bool CopyCStoreTableStatement(CopyStmt* copyStatement);
 static uint64 CopyIntoCStoreTable(const CopyStmt *copyStatement,
 								  const char *queryString);
-static uint64 CopyFromCStoreTable(CopyStmt* copyStatement, const char* queryString);
+static uint64 CopyOutCStoreTable(CopyStmt* copyStatement, const char* queryString);
 static void CreateCStoreDatabaseDirectory(Oid databaseOid);
 static bool DirectoryExists(StringInfo directoryName);
 static void CreateDirectory(StringInfo directoryName);
@@ -210,59 +213,59 @@ cstore_ddl_event_end_trigger(PG_FUNCTION_ARGS)
 
 
 /*
+ * CallPreviousProcessUtility calls previously registered utility hook. If there is
+ * no utility hook is registered, it calls standard process utility handler.
+ */
+static void
+CallPreviousProcessUtility(Node* parseTree, const char* queryString,
+		                   ProcessUtilityContext context, ParamListInfo paramListInfo,
+						   DestReceiver* destReceiver, char* completionTag)
+{
+	if (PreviousProcessUtilityHook != NULL)
+	{
+		PreviousProcessUtilityHook(parseTree, queryString, context,
+				paramListInfo, destReceiver, completionTag);
+	}
+	else
+	{
+		standard_ProcessUtility(parseTree, queryString, context, paramListInfo,
+				destReceiver, completionTag);
+	}
+}
+
+
+/*
  * CStoreProcessUtility is the hook for handling utility commands. This function
- * intercepts "COPY cstore_table FROM/TO" statements, and redirects execution to
- * CStoreProcessCopyCommand function. For DROP FOREIGN TABLE commands, it stores the
- * file path(s) used for the table before calling the previous/standard utility
- * command and then deletes the file(s) once the drop is successful. For all other
- * utility statements, the function calls the previous utility hook or the
- * standard utility command.
+ * customizes the behaviour of "COPY cstore_table" and "DROP FOREIGN TABLE
+ * cstore_table" commands. For all other utility statements, the function calls
+ * the previous utility hook or the standard utility command.
  */
 static void
 CStoreProcessUtility(Node *parseTree, const char *queryString,
 					 ProcessUtilityContext context, ParamListInfo paramListInfo,
 					 DestReceiver *destReceiver, char *completionTag)
 {
-	List *droppedTables = NIL;
-	bool commandHandled = false;
-
-	/* Check if the statement is a "COPY cstore_table FROM ..."
-	 * or "COPY cstore_table TO ...." statement.
-	 */
 	if (nodeTag(parseTree) == T_CopyStmt)
 	{
-		CStoreProcessCopyCommand((CopyStmt *) parseTree, queryString,
-								 completionTag, &commandHandled);
-	}
-	else if (nodeTag(parseTree) == T_DropStmt)
-	{
-		/*
-		 * Check if the statement is a "DROP FOREIGN TABLE cstore_table ..."
-		 * statement and store the filename for that table if it is.
-		 */
-		CStoreProcessDropCommand((DropStmt*) parseTree, &droppedTables,
-				                 &commandHandled);
-	}
+		CopyStmt *copyStatement = (CopyStmt *) parseTree;
 
-	if (!commandHandled)
-	{
-		if (PreviousProcessUtilityHook != NULL)
+		if (CopyCStoreTableStatement(copyStatement))
 		{
-			PreviousProcessUtilityHook(parseTree, queryString, context,
-									   paramListInfo, destReceiver,
-									   completionTag);
+			CStoreProcessCopyCommand(copyStatement, queryString, completionTag);
 		}
 		else
 		{
-			standard_ProcessUtility(parseTree, queryString, context,
-									paramListInfo, destReceiver,
-									completionTag);
+			CallPreviousProcessUtility(parseTree, queryString, context,
+					paramListInfo, destReceiver, completionTag);
 		}
 	}
-
-	if (droppedTables != NIL)
+	else if (nodeTag(parseTree) == T_DropStmt)
 	{
 		ListCell *fileListCell = NULL;
+		List *droppedTables = DropppedCStoreFilenameList((DropStmt*) parseTree);
+
+		CallPreviousProcessUtility(parseTree, queryString, context,
+				                   paramListInfo, destReceiver, completionTag);
 
 		foreach(fileListCell, droppedTables)
 		{
@@ -271,68 +274,50 @@ CStoreProcessUtility(Node *parseTree, const char *queryString,
 			DeleteCStoreTableFiles(fileName);
 		}
 	}
+	/* handle other utility statements */
+	else
+	{
+		CallPreviousProcessUtility(parseTree, queryString, context,
+						                   paramListInfo, destReceiver, completionTag);
+	}
 }
 
 
 /*
- * CStoreProcessCopyCommand handles COPY <cstore_table> FROM/TO ... statements. It
- * determines if the relation in COPY statement is a cstore table then it forwards
- * execution to appropriate function. It sets commandHandled flag to true if it
- * executes the command, sets it to false otherwise.
+ * CStoreProcessCopyCommand handles COPY <cstore_table> FROM/TO ... statements.
+ * It determines the copy direction and forwards execution to appropriate function.
  */
 static void
 CStoreProcessCopyCommand(CopyStmt *copyStatement, const char* queryString,
-						 char *completionTag, bool *commandHandled)
+						 char *completionTag)
 {
-	bool cstoreTable = false;
 	uint64 processedCount = 0;
-	bool commandDone = false;
 
-	/* Check if the statement is a "COPY cstore_table FROM ..."
-	 * or "COPY cstore_table TO ...." statement.
-	 */
-
-	if (copyStatement->relation != NULL)
+	if (copyStatement->is_from)
 	{
-		Oid relationId = RangeVarGetRelid(copyStatement->relation,
-				                          AccessShareLock, false);
-		cstoreTable = CStoreTable(relationId);
+		processedCount = CopyIntoCStoreTable(copyStatement, queryString);
+	}
+	else
+	{
+		processedCount = CopyOutCStoreTable(copyStatement, queryString);
 	}
 
-	if (cstoreTable)
-	{
-		if (copyStatement->is_from)
-		{
-			processedCount = CopyIntoCStoreTable(copyStatement, queryString);
-		}
-		else
-		{
-			processedCount = CopyFromCStoreTable(copyStatement, queryString);
-		}
-		commandDone = true;
-	}
-
-	if (commandDone && completionTag != NULL)
+	if (completionTag != NULL)
 	{
 		snprintf(completionTag, COMPLETION_TAG_BUFSIZE, "COPY " UINT64_FORMAT,
 				 processedCount);
 	}
-
-	*commandHandled = commandDone;
 }
 
 
 /*
- * CStoreProcessDropCommand handles DROP statement. It extracts and returns the
- * list of cstore file names from DROP table list. Disk files are not erased in
- * this function. droppedFiles parameter is set to NIL if there is no cstore table
- * specified in DROP statement. commandHandled parameter is always set to false.
+ * DropppedCStoreFilenameList extracts and returns the list of cstore file names
+ * from DROP table statement
  */
-static void
-CStoreProcessDropCommand(DropStmt *dropStatement, List **droppedFiles,
-					  	 bool *commandHandled)
+static List *
+DropppedCStoreFilenameList(DropStmt *dropStatement)
 {
-	List *fileList = NIL;
+	List *cstoreFileList = NIL;
 
 	if (dropStatement->removeType == OBJECT_FOREIGN_TABLE)
 	{
@@ -346,15 +331,12 @@ CStoreProcessDropCommand(DropStmt *dropStatement, List **droppedFiles,
 			if (CStoreTable(relationId))
 			{
 				CStoreFdwOptions *cstoreFdwOptions = CStoreGetOptions(relationId);
-				fileList = lappend(fileList, cstoreFdwOptions->filename);
-
-				/* mark that this is a drop command for a cstore table */
+				cstoreFileList = lappend(cstoreFileList, cstoreFdwOptions->filename);
 			}
 		}
 	}
 
-	*commandHandled = false;
-	*droppedFiles = fileList;
+	return cstoreFileList;
 }
 
 
@@ -421,6 +403,25 @@ CStoreTable(Oid relationId)
 	return cstoreTable;
 }
 
+
+/*
+ * 	CopyCStoreTableStatement check whether the COPY statement is a
+ * 	"COPY cstore_table FROM ..." or "COPY cstore_table TO ...." statement. If it
+ * 	is then the function returns true. It returns false otherwise.
+ */
+static bool
+CopyCStoreTableStatement(CopyStmt* copyStatement)
+{
+	bool cstoreTable = false;
+
+	if (copyStatement->relation != NULL)
+	{
+		Oid relationId = RangeVarGetRelid(copyStatement->relation,
+										  AccessShareLock, false);
+		cstoreTable = CStoreTable(relationId);
+	}
+	return cstoreTable;
+}
 
 /*
  * CopyIntoCStoreTable handles a "COPY cstore_table FROM" statement. This
@@ -530,7 +531,7 @@ CopyIntoCStoreTable(const CopyStmt *copyStatement, const char *queryString)
  * stream. Copying selected columns from cstore table is not currently supported.
  */
 static uint64
-CopyFromCStoreTable(CopyStmt* copyStatement, const char* queryString)
+CopyOutCStoreTable(CopyStmt* copyStatement, const char* queryString)
 {
 	/*
 	 * Re-write query to be in form of
@@ -540,7 +541,7 @@ CopyFromCStoreTable(CopyStmt* copyStatement, const char* queryString)
 	char *relationName = NULL;
 	char *qualifiedName = NULL;
 	List *queryList = NIL;
-	ListCell *lc = NULL;
+	ListCell *queryListCell = NULL;
 	uint64 processedCount = 0;
 	StringInfo newQuerySubstring = makeStringInfo();
 
@@ -558,9 +559,9 @@ CopyFromCStoreTable(CopyStmt* copyStatement, const char* queryString)
 											   relation->relname);
 	appendStringInfo(newQuerySubstring, "select * from %s", qualifiedName);
 	queryList = raw_parser(newQuerySubstring->data);
-	foreach (lc, queryList)
+	foreach(queryListCell, queryList)
 	{
-		Node *parsedQuery = lfirst(lc);
+		Node *parsedQuery = lfirst(queryListCell);
 
 		/* take the first parse tree */
 		copyStatement->query = parsedQuery;
