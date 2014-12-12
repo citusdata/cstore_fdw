@@ -474,7 +474,6 @@ CopyOutCStoreTable(CopyStmt* copyStatement, const char* queryString)
 {
 	uint64 processedCount = 0;
 	RangeVar *relation = NULL;
-	char *relationName = NULL;
 	char *qualifiedName = NULL;
 	List *queryList = NIL;
 
@@ -489,7 +488,6 @@ CopyOutCStoreTable(CopyStmt* copyStatement, const char* queryString)
 	}
 
 	relation = copyStatement->relation;
-	relationName = relation->relname;
 	qualifiedName = quote_qualified_identifier(relation->schemaname,
 											   relation->relname);
 	appendStringInfo(newQuerySubstring, "select * from %s", qualifiedName);
@@ -1727,7 +1725,7 @@ CStoreExecForeignInsert(EState *executorState, ResultRelInfo *relationInfo,
 {
 	TableWriteState *writeState = (TableWriteState*) relationInfo->ri_FdwState;
 
-	Assert(writeState != NULL)
+	Assert(writeState != NULL);
 
 	slot_getallattrs(tupleSlot);
 
