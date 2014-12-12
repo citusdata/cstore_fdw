@@ -39,6 +39,7 @@
 #include "optimizer/planmain.h"
 #include "optimizer/restrictinfo.h"
 #include "optimizer/var.h"
+#include "parser/parser.h"
 #include "parser/parsetree.h"
 #include "tcop/utility.h"
 #include "utils/builtins.h"
@@ -52,13 +53,23 @@ static void CStoreProcessUtility(Node *parseTree, const char *queryString,
 								 ProcessUtilityContext context,
 								 ParamListInfo paramListInfo,
 								 DestReceiver *destReceiver, char *completionTag);
-static bool CStoreTable(Oid relationId);
+static void CallPreviousProcessUtility(Node* parseTree, const char* queryString,
+									   ProcessUtilityContext context,
+									   ParamListInfo paramListInfo,
+									   DestReceiver* destReceiver, char* completionTag);
+static bool CopyCStoreTableStatement(CopyStmt* copyStatement);
+static void CheckSuperuserPrivilegesForCopy(const CopyStmt* copyStatement);
+static void CStoreProcessCopyCommand(CopyStmt *copyStatement, const char *queryString,
+									 char *completionTag);
 static uint64 CopyIntoCStoreTable(const CopyStmt *copyStatement,
 								  const char *queryString);
+static uint64 CopyOutCStoreTable(CopyStmt* copyStatement, const char* queryString);
+static List * DroppedCStoreFilenameList(DropStmt *dropStatement);
+static void DeleteCStoreTableFiles(char *filename);
+static bool CStoreTable(Oid relationId);
 static void CreateCStoreDatabaseDirectory(Oid databaseOid);
 static bool DirectoryExists(StringInfo directoryName);
 static void CreateDirectory(StringInfo directoryName);
-static void DeleteCStoreTableFiles(char *filename);
 static StringInfo OptionNamesString(Oid currentContextId);
 static CStoreFdwOptions * CStoreGetOptions(Oid foreignTableId);
 static char * CStoreGetOptionValue(Oid foreignTableId, const char *optionName);
@@ -202,122 +213,151 @@ cstore_ddl_event_end_trigger(PG_FUNCTION_ARGS)
 
 /*
  * CStoreProcessUtility is the hook for handling utility commands. This function
- * intercepts "COPY cstore_table FROM" statements, and redirects execution to
- * CopyIntoCStoreTable function. For DROP FOREIGN TABLE commands, it stores the
- * file path used for the table before calling the previous/standard utility
- * command and then deletes the file once the drop is successful. For all other
- * utility statements, the function calls the previous utility hook or the
- * standard utility command.
+ * customizes the behaviour of "COPY cstore_table" and "DROP FOREIGN TABLE
+ * cstore_table" commands. For all other utility statements, the function calls
+ * the previous utility hook or the standard utility command.
  */
 static void
 CStoreProcessUtility(Node *parseTree, const char *queryString,
 					 ProcessUtilityContext context, ParamListInfo paramListInfo,
 					 DestReceiver *destReceiver, char *completionTag)
 {
-	bool copyIntoCStoreTable = false;
-	bool dropCStoreTable = false;
-	char *tableFilename = NULL;
-
-	/* check if the statement is a "COPY cstore_table FROM ..." statement */
 	if (nodeTag(parseTree) == T_CopyStmt)
 	{
 		CopyStmt *copyStatement = (CopyStmt *) parseTree;
-		if (copyStatement->is_from)
+
+		if (CopyCStoreTableStatement(copyStatement))
 		{
-			Oid relationId = RangeVarGetRelid(copyStatement->relation,
-											  AccessShareLock, false);
-			if (CStoreTable(relationId))
-			{
-				copyIntoCStoreTable = true;
-			}
+			CStoreProcessCopyCommand(copyStatement, queryString, completionTag);
+		}
+		else
+		{
+			CallPreviousProcessUtility(parseTree, queryString, context,
+									   paramListInfo, destReceiver, completionTag);
 		}
 	}
-
-	/*
-	 * Check if the statement is a "DROP FOREIGN TABLE cstore_table ..."
-	 * statement and store the filename for that table if it is.
-	 */
-	if (nodeTag(parseTree) == T_DropStmt)
+	else if (nodeTag(parseTree) == T_DropStmt)
 	{
-		DropStmt *dropStatement = (DropStmt *) parseTree;
-		if (dropStatement->removeType == OBJECT_FOREIGN_TABLE)
+		ListCell *fileListCell = NULL;
+		List *droppedTables = DroppedCStoreFilenameList((DropStmt*) parseTree);
+
+		CallPreviousProcessUtility(parseTree, queryString, context,
+				                   paramListInfo, destReceiver, completionTag);
+
+		foreach(fileListCell, droppedTables)
 		{
-			ListCell *dropObjectCell = NULL;
-			foreach(dropObjectCell, dropStatement->objects)
-			{
-				List *tableNameList = (List *) lfirst(dropObjectCell);
-				RangeVar *rangeVar = makeRangeVarFromNameList(tableNameList);
+			char *fileName = lfirst(fileListCell);
 
-				Oid relationId = RangeVarGetRelid(rangeVar, AccessShareLock, true);
-				if (CStoreTable(relationId))
-				{
-					CStoreFdwOptions *cstoreFdwOptions = CStoreGetOptions(relationId);
-					tableFilename = cstoreFdwOptions->filename;
-
-					/* mark that this is a drop command for a cstore table */
-					dropCStoreTable = true;
-				}
-			}
+			DeleteCStoreTableFiles(fileName);
 		}
 	}
-
-	if (copyIntoCStoreTable)
+	/* handle other utility statements */
+	else
 	{
-		uint64 processed = CopyIntoCStoreTable((CopyStmt *) parseTree, queryString);
-		if (completionTag != NULL)
-		{
-			snprintf(completionTag, COMPLETION_TAG_BUFSIZE,
-					 "COPY " UINT64_FORMAT, processed);
-		}
+		CallPreviousProcessUtility(parseTree, queryString, context,
+								   paramListInfo, destReceiver, completionTag);
 	}
-	else if (PreviousProcessUtilityHook != NULL)
+}
+
+
+/*
+ * CallPreviousProcessUtility calls the previously registered utility hook. If no
+ * utility hook is registered, it calls the standard process utility handler.
+ */
+static void
+CallPreviousProcessUtility(Node* parseTree, const char* queryString,
+						   ProcessUtilityContext context, ParamListInfo paramListInfo,
+						   DestReceiver* destReceiver, char* completionTag)
+{
+	if (PreviousProcessUtilityHook != NULL)
 	{
-		PreviousProcessUtilityHook(parseTree, queryString, context, paramListInfo,
-								   destReceiver, completionTag);
+		PreviousProcessUtilityHook(parseTree, queryString, context,
+								   paramListInfo, destReceiver, completionTag);
 	}
 	else
 	{
 		standard_ProcessUtility(parseTree, queryString, context, paramListInfo,
 								destReceiver, completionTag);
 	}
+}
 
-	if (dropCStoreTable)
+
+/*
+ * CopyCStoreTableStatement check whether the COPY statement is a "COPY cstore_table FROM
+ * ..." or "COPY cstore_table TO ...." statement. If it is then the function returns
+ * true. The function returns false otherwise.
+ */
+static bool
+CopyCStoreTableStatement(CopyStmt* copyStatement)
+{
+	bool copyCStoreTableStatement = false;
+
+	if (copyStatement->relation != NULL)
 	{
-		DeleteCStoreTableFiles(tableFilename);
+		Oid relationId = RangeVarGetRelid(copyStatement->relation,
+										  AccessShareLock, false);
+		copyCStoreTableStatement = CStoreTable(relationId);
+	}
+
+	return copyCStoreTableStatement;
+}
+
+
+/*
+ * CheckSuperuserPrivilegesForCopy checks if superuser privilege is required by
+ * copy operation and reports error if user does not have superuser rights.
+ */
+static void
+CheckSuperuserPrivilegesForCopy(const CopyStmt* copyStatement)
+{
+	/*
+	 * We disallow copy from file or program except to superusers. These checks
+	 * are based on the checks in DoCopy() function of copy.c.
+	 */
+	if (copyStatement->filename != NULL && !superuser())
+	{
+		if (copyStatement->is_program)
+		{
+			ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+					 errmsg("must be superuser to COPY to or from a program"),
+					 errhint("Anyone can COPY to stdout or from stdin. "
+							 "psql's \\copy command also works for anyone.")));
+		}
+		else
+		{
+			ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
+					 errmsg("must be superuser to COPY to or from a file"),
+					 errhint("Anyone can COPY to stdout or from stdin. "
+							 "psql's \\copy command also works for anyone.")));
+		}
 	}
 }
 
 
 /*
- * CStoreTable checks if the given table name belongs to a foreign columnar store
- * table. If it does, the function returns true. Otherwise, it returns false.
+ * CStoreProcessCopyCommand handles COPY <cstore_table> FROM/TO ... statements.
+ * It determines the copy direction and forwards execution to appropriate function.
  */
-static bool
-CStoreTable(Oid relationId)
+static void
+CStoreProcessCopyCommand(CopyStmt *copyStatement, const char* queryString,
+						 char *completionTag)
 {
-	bool cstoreTable = false;
-	char relationKind = 0;
+	uint64 processedCount = 0;
 
-	if (relationId == InvalidOid)
+	if (copyStatement->is_from)
 	{
-		return false;
+		processedCount = CopyIntoCStoreTable(copyStatement, queryString);
+	}
+	else
+	{
+		processedCount = CopyOutCStoreTable(copyStatement, queryString);
 	}
 
-	relationKind = get_rel_relkind(relationId);
-	if (relationKind == RELKIND_FOREIGN_TABLE)
+	if (completionTag != NULL)
 	{
-		ForeignTable *foreignTable = GetForeignTable(relationId);
-		ForeignServer *server = GetForeignServer(foreignTable->serverid);
-		ForeignDataWrapper *foreignDataWrapper = GetForeignDataWrapper(server->fdwid);
-
-		char *foreignWrapperName = foreignDataWrapper->fdwname;
-		if (strncmp(foreignWrapperName, CSTORE_FDW_NAME, NAMEDATALEN) == 0)
-		{
-			cstoreTable = true;
-		}
+		snprintf(completionTag, COMPLETION_TAG_BUFSIZE, "COPY " UINT64_FORMAT,
+				 processedCount);
 	}
-
-	return cstoreTable;
 }
 
 
@@ -351,27 +391,8 @@ CopyIntoCStoreTable(const CopyStmt *copyStatement, const char *queryString)
 						errmsg("copy column list is not supported")));
 	}
 
-	/*
-	 * We disallow copy from file or program except to superusers. These checks
-	 * are based on the checks in DoCopy() function of copy.c.
-	 */
-	if (copyStatement->filename != NULL && !superuser())
-	{
-		if (copyStatement->is_program)
-		{
-			ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-							errmsg("must be superuser to COPY to or from a program"),
-							errhint("Anyone can COPY to stdout or from stdin. "
-									"psql's \\copy command also works for anyone.")));
-		}
-		else
-		{
-			ereport(ERROR, (errcode(ERRCODE_INSUFFICIENT_PRIVILEGE),
-							errmsg("must be superuser to COPY to or from a file"),
-							errhint("Anyone can COPY to stdout or from stdin. "
-									"psql's \\copy command also works for anyone.")));
-		}
-	}
+	/* Only superuser can copy from or to local file */
+	CheckSuperuserPrivilegesForCopy(copyStatement);
 
 	Assert(copyStatement->relation != NULL);
 
@@ -438,6 +459,147 @@ CopyIntoCStoreTable(const CopyStmt *copyStatement, const char *queryString)
 	heap_close(relation, ExclusiveLock);
 
 	return processedRowCount;
+}
+
+
+/*
+ * CopyFromCStoreTable handles a "COPY cstore_table TO ..." statement. Statement
+ * is converted to "COPY (SELECT * FROM cstore_table) TO ..." and forwarded to
+ * postgres native COPY handler. Function returns number of files copied to external
+ * stream. Copying selected columns from cstore table is not currently supported.
+ */
+static uint64
+CopyOutCStoreTable(CopyStmt* copyStatement, const char* queryString)
+{
+	uint64 processedCount = 0;
+	RangeVar *relation = NULL;
+	char *qualifiedName = NULL;
+	List *queryList = NIL;
+
+	StringInfo newQuerySubstring = makeStringInfo();
+
+	if (copyStatement->attlist != NIL)
+	{
+		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
+						errmsg("copy column list is not supported"),
+						errhint("use 'copy (select <columns> from <table>) to "
+								"...' instead")));
+	}
+
+	relation = copyStatement->relation;
+	qualifiedName = quote_qualified_identifier(relation->schemaname,
+											   relation->relname);
+	appendStringInfo(newQuerySubstring, "select * from %s", qualifiedName);
+	queryList = raw_parser(newQuerySubstring->data);
+
+	/* take the first parse tree */
+	copyStatement->query = linitial(queryList);
+
+	/*
+	 * Set the relation field to NULL so that COPY command works on
+	 * query field instead.
+	 */
+	copyStatement->relation = NULL;
+	DoCopy(copyStatement, queryString, &processedCount);
+
+	return processedCount;
+}
+
+
+/*
+ * DropppedCStoreFilenameList extracts and returns the list of cstore file names
+ * from DROP table statement
+ */
+static List *
+DroppedCStoreFilenameList(DropStmt *dropStatement)
+{
+	List *droppedCStoreFileList = NIL;
+
+	if (dropStatement->removeType == OBJECT_FOREIGN_TABLE)
+	{
+		ListCell *dropObjectCell = NULL;
+		foreach(dropObjectCell, dropStatement->objects)
+		{
+			List *tableNameList = (List *) lfirst(dropObjectCell);
+			RangeVar *rangeVar = makeRangeVarFromNameList(tableNameList);
+
+			Oid relationId = RangeVarGetRelid(rangeVar, AccessShareLock, true);
+			if (CStoreTable(relationId))
+			{
+				CStoreFdwOptions *cstoreFdwOptions = CStoreGetOptions(relationId);
+				droppedCStoreFileList = lappend(droppedCStoreFileList,
+												cstoreFdwOptions->filename);
+			}
+		}
+	}
+
+	return droppedCStoreFileList;
+}
+
+
+/*
+ * DeleteCStoreTableFiles deletes the data and footer files for a cstore table
+ * whose data filename is given.
+ */
+static void
+DeleteCStoreTableFiles(char *filename)
+{
+	int dataFileRemoved = 0;
+	int footerFileRemoved = 0;
+
+	StringInfo tableFooterFilename = makeStringInfo();
+	appendStringInfo(tableFooterFilename, "%s%s", filename, CSTORE_FOOTER_FILE_SUFFIX);
+
+	/* delete the footer file */
+	footerFileRemoved = unlink(tableFooterFilename->data);
+	if (footerFileRemoved != 0)
+	{
+		ereport(WARNING, (errcode_for_file_access(),
+						  errmsg("could not delete file \"%s\": %m",
+								 tableFooterFilename->data)));
+	}
+
+	/* delete the data file */
+	dataFileRemoved = unlink(filename);
+	if (dataFileRemoved != 0)
+	{
+		ereport(WARNING, (errcode_for_file_access(),
+						  errmsg("could not delete file \"%s\": %m",
+								 filename)));
+	}
+}
+
+
+/*
+ * CStoreTable checks if the given table name belongs to a foreign columnar store
+ * table. If it does, the function returns true. Otherwise, it returns false.
+ */
+static bool
+CStoreTable(Oid relationId)
+{
+	bool cstoreTable = false;
+	char relationKind = 0;
+
+	if (relationId == InvalidOid)
+	{
+		return false;
+	}
+
+	relationKind = get_rel_relkind(relationId);
+	if (relationKind == RELKIND_FOREIGN_TABLE)
+	{
+		ForeignTable *foreignTable = GetForeignTable(relationId);
+		ForeignServer *server = GetForeignServer(foreignTable->serverid);
+		ForeignDataWrapper *foreignDataWrapper = GetForeignDataWrapper(server->fdwid);
+
+		char *foreignWrapperName = foreignDataWrapper->fdwname;
+		if (strncmp(foreignWrapperName, CSTORE_FDW_NAME, NAMEDATALEN) == 0)
+		{
+			cstoreTable = true;
+		}
+	}
+
+	return cstoreTable;
 }
 
 
@@ -520,39 +682,6 @@ CreateDirectory(StringInfo directoryName)
 		ereport(ERROR, (errcode_for_file_access(),
 						errmsg("could not create directory \"%s\": %m",
 							   directoryName->data)));
-	}
-}
-
-
-/*
- * DeleteCStoreTableFiles deletes the data and footer files for a cstore table
- * whose data filename is given.
- */
-static void
-DeleteCStoreTableFiles(char *filename)
-{
-	int dataFileRemoved = 0;
-	int footerFileRemoved = 0;
-
-	StringInfo tableFooterFilename = makeStringInfo();
-	appendStringInfo(tableFooterFilename, "%s%s", filename, CSTORE_FOOTER_FILE_SUFFIX);
-
-	/* delete the footer file */
-	footerFileRemoved = unlink(tableFooterFilename->data);
-	if (footerFileRemoved != 0)
-	{
-		ereport(WARNING, (errcode_for_file_access(),
-						  errmsg("could not delete file \"%s\": %m",
-								 tableFooterFilename->data)));
-	}
-
-	/* delete the data file */
-	dataFileRemoved = unlink(filename);
-	if (dataFileRemoved != 0)
-	{
-		ereport(WARNING, (errcode_for_file_access(),
-						  errmsg("could not delete file \"%s\": %m",
-								 filename)));
 	}
 }
 
@@ -1595,7 +1724,7 @@ CStoreExecForeignInsert(EState *executorState, ResultRelInfo *relationInfo,
 {
 	TableWriteState *writeState = (TableWriteState*) relationInfo->ri_FdwState;
 
-	Assert(writeState != NULL)
+	Assert(writeState != NULL);
 
 	slot_getallattrs(tupleSlot);
 
