@@ -42,6 +42,7 @@ static StripeData * LoadFilteredStripeData(FILE *tableFile,
 										   List *whereClauseList);
 static void ReadStripeNextRow(StripeData *stripeData, List *projectedColumnList,
 							  uint64 blockIndex, uint64 blockRowIndex,
+							  DeserializedColumnBlockData **deserializedColumnBlockDataArray,
 							  Datum *columnValues, bool *columnNulls);
 static ColumnData * LoadColumnData(FILE *tableFile,
 								   ColumnBlockSkipNode *blockSkipNodeArray,
@@ -55,6 +56,8 @@ static StripeSkipList * LoadStripeSkipList(FILE *tableFile,
 										   StripeFooter *stripeFooter,
 										   uint32 columnCount,
 										   Form_pg_attribute *attributeFormArray);
+DeserializedColumnBlockData**
+CreateColumnBlockDataBuffers(uint32 columnCount, bool* columnMask, uint32 blockRowCount);
 static bool * SelectedBlockMask(StripeSkipList *stripeSkipList,
 								List *projectedColumnList, List *whereClauseList);
 static List * BuildRestrictInfoList(List *whereClauseList);
@@ -66,8 +69,8 @@ static StripeSkipList * SelectedBlockSkipList(StripeSkipList *stripeSkipList,
 											  bool *selectedBlockMask);
 static uint32 StripeSkipListRowCount(StripeSkipList *stripeSkipList);
 static bool * ProjectedColumnMask(uint32 columnCount, List *projectedColumnList);
-static bool * DeserializeBoolArray(StringInfo boolArrayBuffer, uint32 boolArrayLength);
-static Datum * DeserializeDatumArray(StringInfo datumBuffer, bool *existsArray,
+static void DeserializeBoolArray(StringInfo boolArrayBuffer, bool *boolArray, uint32 boolArrayLength);
+static void DeserializeDatumArray(StringInfo datumBuffer, bool *existsArray, Datum *datumArray,
 									 uint32 datumCount, bool datumTypeByValue,
 									 int datumTypeLength, char datumTypeAlign);
 static int64 FileSize(FILE *file);
@@ -87,6 +90,8 @@ CStoreBeginRead(const char *filename, TupleDesc tupleDescriptor,
 	TableFooter *tableFooter = NULL;
 	FILE *tableFile = NULL;
 	MemoryContext stripeReadContext = NULL;
+	uint32 columnCount = 0;
+	bool *projectedColumnMask = NULL;
 
 	StringInfo tableFooterFilename = makeStringInfo();
 	appendStringInfo(tableFooterFilename, "%s%s", filename, CSTORE_FOOTER_FILE_SUFFIX);
@@ -114,6 +119,12 @@ CStoreBeginRead(const char *filename, TupleDesc tupleDescriptor,
 											  ALLOCSET_DEFAULT_MINSIZE,
 											  ALLOCSET_DEFAULT_INITSIZE,
 											  ALLOCSET_DEFAULT_MAXSIZE);
+	columnCount = tupleDescriptor->natts;
+	projectedColumnMask = ProjectedColumnMask(columnCount, projectedColumnList);
+
+	DeserializedColumnBlockData** deserializedColumnBlockDataArray =
+			CreateColumnBlockDataBuffers(columnCount, projectedColumnMask,
+										 tableFooter->blockRowCount);
 
 	readState = palloc0(sizeof(TableReadState));
 	readState->tableFile = tableFile;
@@ -125,6 +136,8 @@ CStoreBeginRead(const char *filename, TupleDesc tupleDescriptor,
 	readState->stripeReadRowCount = 0;
 	readState->tupleDescriptor = tupleDescriptor;
 	readState->stripeReadContext = stripeReadContext;
+	readState->deserializedColumnBlockDataArray = deserializedColumnBlockDataArray;
+	readState->deserializedBlockIndex = -1;
 
 	return readState;
 }
@@ -200,6 +213,88 @@ CStoreReadFooter(StringInfo tableFooterFilename)
 }
 
 
+/* DeserializeBlockData  deserializes requested data block for all columns. It
+ * uncompresses serialized data if necessary, sets deserialized buffer index at
+ * read state. The function also deallocates previous data buffer used to keep temporary
+ * uncompressed data buffer.
+ */
+static void
+DeserializeBlockData(TupleDesc tupleDescriptor, StripeData *stripeData,
+					 DeserializedColumnBlockData **deserializedColumnBlockDataArray,
+					 MemoryContext stripeReadContext, uint64 blockIndex)
+{
+	int columnIndex = 0;
+	MemoryContext oldContext = MemoryContextSwitchTo(stripeReadContext);
+
+	for (columnIndex=0; columnIndex < stripeData->columnCount; columnIndex++)
+	{
+		ColumnData *columnData = stripeData->columnDataArray[columnIndex];
+
+		if (columnData != NULL)
+		{
+			ColumnBlockData *blockData = columnData->blockDataArray[blockIndex];
+			Form_pg_attribute *attributeFormArray = tupleDescriptor->attrs;
+			bool typeByValue = attributeFormArray[columnIndex]->attbyval;
+			int typeLength = attributeFormArray[columnIndex]->attlen;
+			char typeAlign = attributeFormArray[columnIndex]->attalign;
+			DeserializedColumnBlockData * deserializedBlockData =
+				deserializedColumnBlockDataArray[columnIndex];
+			StringInfo valueBuffer = NULL;
+
+			if (deserializedBlockData->uncompressedDataBuffer != NULL)
+			{
+				pfree(deserializedBlockData->uncompressedDataBuffer->data);
+				pfree(deserializedBlockData->uncompressedDataBuffer);
+				deserializedBlockData->uncompressedDataBuffer = NULL;
+			}
+
+			valueBuffer = DecompressBuffer(blockData->serializedValueBuffer,
+										   blockData->valueCompressionType);
+
+			DeserializeBoolArray(blockData->serializedExistBuffer,
+								 deserializedBlockData->existsArray,
+								 blockData->rowCount);
+			DeserializeDatumArray(valueBuffer, deserializedBlockData->existsArray,
+								  deserializedBlockData->valueArray,
+								  blockData->rowCount, typeByValue, typeLength,
+								  typeAlign);
+
+			/* store newly allocated uncompressed data buffer to be freed later */
+			if (valueBuffer != blockData->serializedValueBuffer)
+			{
+				deserializedBlockData->uncompressedDataBuffer = valueBuffer;
+			}
+		}
+	}
+
+	MemoryContextSwitchTo(oldContext);
+}
+
+
+/*
+ * ResetUncompressedDataBuffers iterates over deserialized column block data
+ * buffers and sets uncompressedDataBuffer field to NULL. This field is
+ * allocated in stripe memory context and becomes invalid once memory context
+ * is reset.
+ */
+static void
+ResetUncompressedDataBuffers(DeserializedColumnBlockData **deserializedColumnBlockDataArray,
+							 uint32 columnCount)
+{
+	uint32 columnIndex = 0;
+
+	for (columnIndex = 0; columnIndex < columnCount; columnIndex++)
+	{
+		DeserializedColumnBlockData *columnBlockData =
+				deserializedColumnBlockDataArray[columnIndex];
+		if (columnBlockData != NULL)
+		{
+			columnBlockData->uncompressedDataBuffer = NULL;
+		}
+	}
+}
+
+
 /*
  * CStoreReadNextRow tries to read a row from the cstore file. On success, it sets
  * column values and nulls, and returns true. If there are no more rows to read,
@@ -248,6 +343,9 @@ CStoreReadNextRow(TableReadState *readState, Datum *columnValues, bool *columnNu
 		{
 			readState->stripeData = stripeData;
 			readState->stripeReadRowCount = 0;
+			readState->deserializedBlockIndex = -1;
+			ResetUncompressedDataBuffers(readState->deserializedColumnBlockDataArray,
+										stripeData->columnCount);
 			break;
 		}
 	}
@@ -255,8 +353,18 @@ CStoreReadNextRow(TableReadState *readState, Datum *columnValues, bool *columnNu
 	blockIndex = readState->stripeReadRowCount / tableFooter->blockRowCount;
 	blockRowIndex = readState->stripeReadRowCount % tableFooter->blockRowCount;
 
+	if (blockIndex != readState->deserializedBlockIndex)
+	{
+		DeserializeBlockData(readState->tupleDescriptor, readState->stripeData,
+								 readState->deserializedColumnBlockDataArray,
+								 readState->stripeReadContext, blockIndex);
+		readState->deserializedBlockIndex = blockIndex;
+	}
+
 	ReadStripeNextRow(readState->stripeData, readState->projectedColumnList,
-					  blockIndex, blockRowIndex, columnValues, columnNulls);
+					  blockIndex, blockRowIndex,
+					  readState->deserializedColumnBlockDataArray,
+					  columnValues, columnNulls);
 
 	/*
 	 * If we finished reading the current stripe, set stripe data to NULL. That
@@ -285,7 +393,35 @@ CStoreEndRead(TableReadState *readState)
 
 
 /*
- * LoadFilteredStripeData reads and decompresses stripe data from the given file.
+ * CreateColumnBlockDataBuffers creates data buffers to keep deserialized exist and
+ * value arrays for requested columns in columnMask.
+ */
+DeserializedColumnBlockData**
+CreateColumnBlockDataBuffers(uint32 columnCount, bool* columnMask, uint32 blockRowCount)
+{
+	uint32 columnIndex = 0;
+	DeserializedColumnBlockData** deserializedColumnBlockDataArray = palloc0(
+			columnCount * sizeof(DeserializedColumnBlockData*));
+	/* allocate block memory for deserialized data */
+	for (columnIndex = 0; columnIndex < columnCount; columnIndex++)
+	{
+		if (columnMask[columnIndex])
+		{
+			DeserializedColumnBlockData *blockData =
+					palloc0(sizeof(DeserializedColumnBlockData));
+
+			blockData->existsArray = palloc0(sizeof(bool) * blockRowCount);
+			blockData->valueArray = palloc0(sizeof(Datum) * blockRowCount);
+			blockData->uncompressedDataBuffer = NULL;
+
+			deserializedColumnBlockDataArray[columnIndex] = blockData;
+		}
+	}
+	return deserializedColumnBlockDataArray;
+}
+
+/*
+ * LoadFilteredStripeData reads serialized stripe data from the given file.
  * The function skips over blocks whose rows are refuted by restriction qualifiers,
  * and only loads columns that are projected in the query.
  */
@@ -360,6 +496,7 @@ LoadFilteredStripeData(FILE *tableFile, StripeMetadata *stripeMetadata,
 static void
 ReadStripeNextRow(StripeData *stripeData, List *projectedColumnList,
 				  uint64 blockIndex, uint64 blockRowIndex,
+				  DeserializedColumnBlockData **deserializedColumnBlockDataArray,
 				  Datum *columnValues, bool *columnNulls)
 {
 	ListCell *projectedColumnCell = NULL;
@@ -371,8 +508,8 @@ ReadStripeNextRow(StripeData *stripeData, List *projectedColumnList,
 	{
 		Var *projectedColumn = lfirst(projectedColumnCell);
 		uint32 projectedColumnIndex = projectedColumn->varattno - 1;
-		ColumnData *columnData = stripeData->columnDataArray[projectedColumnIndex];
-		ColumnBlockData *blockData = columnData->blockDataArray[blockIndex];
+		DeserializedColumnBlockData *blockData =
+				deserializedColumnBlockDataArray[projectedColumnIndex];
 
 		if (blockData->existsArray[blockRowIndex])
 		{
@@ -384,7 +521,7 @@ ReadStripeNextRow(StripeData *stripeData, List *projectedColumnList,
 
 
 /*
- * LoadColumnData reads and decompresses column data from the given file. These
+ * LoadColumnData reads serialized column data from the given file. These
  * column data are laid out as sequential blocks in the file; and block positions
  * and lengths are retrieved from the column block skip node array.
  */
@@ -395,9 +532,6 @@ LoadColumnData(FILE *tableFile, ColumnBlockSkipNode *blockSkipNodeArray,
 {
 	ColumnData *columnData = NULL;
 	uint32 blockIndex = 0;
-	const bool typeByValue = attributeForm->attbyval;
-	const int typeLength = attributeForm->attlen;
-	const char typeAlign = attributeForm->attalign;
 
 	ColumnBlockData **blockDataArray = palloc0(blockCount * sizeof(ColumnBlockData *));
 	for (blockIndex = 0; blockIndex < blockCount; blockIndex++)
@@ -413,13 +547,11 @@ LoadColumnData(FILE *tableFile, ColumnBlockSkipNode *blockSkipNodeArray,
 	for (blockIndex = 0; blockIndex < blockCount; blockIndex++)
 	{
 		ColumnBlockSkipNode *blockSkipNode = &blockSkipNodeArray[blockIndex];
-		uint32 rowCount = blockSkipNode->rowCount;
 		uint64 existsOffset = existsFileOffset + blockSkipNode->existsBlockOffset;
 		StringInfo rawExistsBuffer = ReadFromFile(tableFile, existsOffset,
 												  blockSkipNode->existsLength);
 
-		bool *existsArray = DeserializeBoolArray(rawExistsBuffer, rowCount);
-		blockDataArray[blockIndex]->existsArray = existsArray;
+		blockDataArray[blockIndex]->serializedExistBuffer = rawExistsBuffer;
 	}
 
 	/* then read "values" blocks, which are also stored sequentially on disk */
@@ -427,17 +559,13 @@ LoadColumnData(FILE *tableFile, ColumnBlockSkipNode *blockSkipNodeArray,
 	{
 		ColumnBlockSkipNode *blockSkipNode = &blockSkipNodeArray[blockIndex];
 		uint32 rowCount = blockSkipNode->rowCount;
-		bool *existsArray = blockDataArray[blockIndex]->existsArray;
 		uint64 valueOffset = valueFileOffset + blockSkipNode->valueBlockOffset;
 		StringInfo rawValueBuffer = ReadFromFile(tableFile, valueOffset,
 												 blockSkipNode->valueLength);
-		StringInfo valueBuffer = DecompressBuffer(rawValueBuffer,
-												  blockSkipNode->valueCompressionType);
 
-		Datum *valueArray = DeserializeDatumArray(valueBuffer, existsArray,
-												  rowCount, typeByValue, typeLength,
-												  typeAlign);
-		blockDataArray[blockIndex]->valueArray = valueArray;
+		blockDataArray[blockIndex]->serializedValueBuffer = rawValueBuffer;
+		blockDataArray[blockIndex]->valueCompressionType = blockSkipNode->valueCompressionType;
+		blockDataArray[blockIndex]->rowCount = rowCount;
 	}
 
 	columnData = palloc0(sizeof(ColumnData));
@@ -858,13 +986,12 @@ ProjectedColumnMask(uint32 columnCount, List *projectedColumnList)
 
 
 /*
- * DeserializeBoolArray reads an array of bits from the given buffer and returns
- * it as a boolean array.
+ * DeserializeBoolArray reads an array of bits from the given buffer and stores
+ * it in provided bool array.
  */
-static bool *
-DeserializeBoolArray(StringInfo boolArrayBuffer, uint32 boolArrayLength)
+static void
+DeserializeBoolArray(StringInfo boolArrayBuffer, bool *boolArray, uint32 boolArrayLength)
 {
-	bool *boolArray = NULL;
 	uint32 boolArrayIndex = 0;
 
 	uint32 maximumBoolCount = boolArrayBuffer->len * 8;
@@ -873,7 +1000,6 @@ DeserializeBoolArray(StringInfo boolArrayBuffer, uint32 boolArrayLength)
 		ereport(ERROR, (errmsg("insufficient data for reading boolean array")));
 	}
 
-	boolArray = palloc0(boolArrayLength * sizeof(bool));
 	for (boolArrayIndex = 0; boolArrayIndex < boolArrayLength; boolArrayIndex++)
 	{
 		uint32 byteIndex = boolArrayIndex / 8;
@@ -890,26 +1016,22 @@ DeserializeBoolArray(StringInfo boolArrayBuffer, uint32 boolArrayLength)
 			boolArray[boolArrayIndex] = true;
 		}
 	}
-
-	return boolArray;
 }
 
 
 /*
  * DeserializeDatumArray reads an array of datums from the given buffer and
- * returns the array. If a value is marked as false in the exists array, the
+ * stores them in provided datumArray. If a value is marked as false in the exists array, the
  * function assumes that the datum isn't in the buffer, and simply skips it.
  */
-static Datum *
-DeserializeDatumArray(StringInfo datumBuffer, bool *existsArray, uint32 datumCount,
+static void
+DeserializeDatumArray(StringInfo datumBuffer, bool *existsArray, Datum *datumArray, uint32 datumCount,
 					  bool datumTypeByValue, int datumTypeLength,
 					  char datumTypeAlign)
 {
-	Datum *datumArray = NULL;
 	uint32 datumIndex = 0;
 	uint32 currentDatumDataOffset = 0;
 
-	datumArray = palloc0(datumCount * sizeof(Datum));
 	for (datumIndex = 0; datumIndex < datumCount; datumIndex++)
 	{
 		char *currentDatumDataPointer = NULL;
@@ -934,8 +1056,6 @@ DeserializeDatumArray(StringInfo datumBuffer, bool *existsArray, uint32 datumCou
 			ereport(ERROR, (errmsg("insufficient data left in datum buffer")));
 		}
 	}
-
-	return datumArray;
 }
 
 

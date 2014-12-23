@@ -170,6 +170,14 @@ typedef struct StripeSkipList
 } StripeSkipList;
 
 
+typedef struct DeserializedColumnBlockData
+{
+	bool *existsArray;
+	Datum *valueArray;
+	StringInfo uncompressedDataBuffer;
+
+} DeserializedColumnBlockData;
+
 /*
  * ColumnBlockData represents a block of data in a column. valueArray stores
  * the values of data, and existsArray stores whether a value is present.
@@ -177,8 +185,10 @@ typedef struct StripeSkipList
  */
 typedef struct ColumnBlockData
 {
-	bool *existsArray;
-	Datum *valueArray;
+	StringInfo serializedExistBuffer;
+	StringInfo serializedValueBuffer;
+	CompressionType valueCompressionType;
+	uint32 rowCount;
 
 } ColumnBlockData;
 
@@ -238,6 +248,8 @@ typedef struct TableReadState
 	StripeData *stripeData;
 	uint32 readStripeCount;
 	uint64 stripeReadRowCount;
+	DeserializedColumnBlockData **deserializedColumnBlockDataArray;
+	int32 deserializedBlockIndex;
 
 } TableReadState;
 
@@ -259,6 +271,7 @@ typedef struct TableWriteState
 	StripeData *stripeData;
 	StripeSkipList *stripeSkipList;
 	uint32 stripeMaxRowCount;
+	DeserializedColumnBlockData **deserializedColumnBlockDataArray;
 
 } TableWriteState;
 
