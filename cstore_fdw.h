@@ -272,6 +272,7 @@ typedef struct TableWriteState
 	StripeSkipList *stripeSkipList;
 	uint32 stripeMaxRowCount;
 	DeserializedColumnBlockData **deserializedColumnBlockDataArray;
+	StringInfo decompressionBuffer;
 
 } TableWriteState;
 

@@ -58,6 +58,8 @@ static StripeSkipList * LoadStripeSkipList(FILE *tableFile,
 										   Form_pg_attribute *attributeFormArray);
 DeserializedColumnBlockData**
 CreateColumnBlockDataBuffers(uint32 columnCount, bool* columnMask, uint32 blockRowCount);
+void FreeColumnBlockDataBuffers(DeserializedColumnBlockData **deserializedColumnBlockDataArray,
+						   uint32 columnCount);
 static bool * SelectedBlockMask(StripeSkipList *stripeSkipList,
 								List *projectedColumnList, List *whereClauseList);
 static List * BuildRestrictInfoList(List *whereClauseList);
@@ -384,9 +386,12 @@ CStoreReadNextRow(TableReadState *readState, Datum *columnValues, bool *columnNu
 void
 CStoreEndRead(TableReadState *readState)
 {
+	int columnCount = readState->tupleDescriptor->natts;
+
 	MemoryContextDelete(readState->stripeReadContext);
 	FreeFile(readState->tableFile);
 	list_free_deep(readState->tableFooter->stripeMetadataList);
+	FreeColumnBlockDataBuffers(readState->deserializedColumnBlockDataArray, columnCount);
 	pfree(readState->tableFooter);
 	pfree(readState);
 }
@@ -413,11 +418,36 @@ CreateColumnBlockDataBuffers(uint32 columnCount, bool* columnMask, uint32 blockR
 			blockData->existsArray = palloc0(sizeof(bool) * blockRowCount);
 			blockData->valueArray = palloc0(sizeof(Datum) * blockRowCount);
 			blockData->uncompressedDataBuffer = NULL;
-
 			deserializedColumnBlockDataArray[columnIndex] = blockData;
 		}
 	}
+	
 	return deserializedColumnBlockDataArray;
+}
+
+/*
+ * FreeColumnBlockDataBuffers creates data buffers to keep deserialized exist and
+ * value arrays for requested columns in columnMask.
+ */
+void
+FreeColumnBlockDataBuffers(DeserializedColumnBlockData **deserializedColumnBlockDataArray,
+						   uint32 columnCount)
+{
+	uint32 columnIndex = 0;
+
+	for (columnIndex = 0; columnIndex < columnCount; columnIndex++)
+	{
+		DeserializedColumnBlockData *blockData =
+				deserializedColumnBlockDataArray[columnIndex];
+		if (blockData != NULL)
+		{
+			pfree(blockData->existsArray);
+			pfree(blockData->valueArray);
+			pfree(blockData);
+		}
+	}
+	
+	pfree(deserializedColumnBlockDataArray);
 }
 
 /*
