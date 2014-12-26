@@ -30,9 +30,16 @@ endif
 # example: /usr/local/pgsql/bin/pg_config or /usr/lib/postgresql/9.3/bin/pg_config
 #
 
+ifndef NO_PGXS
 PG_CONFIG = pg_config
 PGXS := $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
+else
+subdir = contrib/cstore_fdw
+top_builddir = ../..
+include $(top_builddir)/src/Makefile.global
+include $(top_srcdir)/contrib/contrib-global.mk
+endif
 
 ifndef MAJORVERSION
     MAJORVERSION := $(basename $(VERSION))
