@@ -1747,3 +1747,4 @@ CStoreEndForeignModify(EState *executorState, ResultRelInfo *relationInfo)
 		CStoreEndWrite(writeState);
 	}
 }
+

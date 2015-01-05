@@ -178,6 +178,7 @@ typedef struct DeserializedColumnBlockData
 
 } DeserializedColumnBlockData;
 
+
 /*
  * ColumnBlockData represents a block of data in a column. valueArray stores
  * the values of data, and existsArray stores whether a value is present.
@@ -313,6 +314,11 @@ extern void CStoreEndRead(TableReadState *state);
 /* Function declarations for common functions */
 extern FmgrInfo * GetFunctionInfoOrNull(Oid typeId, Oid accessMethodId,
 										int16 procedureId);
-
+extern DeserializedColumnBlockData ** CreateColumnBlockDataBuffers(uint32 columnCount,
+																   bool *columnMask,
+																   uint32 blockRowCount);
+extern void FreeColumnBlockDataBuffers(DeserializedColumnBlockData
+									   **deserializedBlockDataArray,
+									   uint32 columnCount);
 
 #endif   /* CSTORE_FDW_H */ 

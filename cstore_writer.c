@@ -46,6 +46,8 @@ static StringInfo SerializeBoolArray(bool *boolArray, uint32 boolArrayLength);
 static void SerializeSingleDatum(StringInfo datumBuffer, Datum datum,
 								 bool datumTypeByValue, int datumTypeLength,
 								 char datumTypeAlign);
+static void SerializeBlockData(TableWriteState *writeState, uint32 blockIndex,
+							   uint32 rowCount);
 static void UpdateBlockSkipNodeMinMax(ColumnBlockSkipNode *blockSkipNode,
 									  Datum columnValue, bool columnTypeByValue,
 									  int columnTypeLength, Oid columnCollation,
@@ -56,12 +58,6 @@ static void AppendStripeMetadata(TableFooter *tableFooter,
 static void WriteToFile(FILE *file, void *data, uint32 dataLength);
 static void SyncAndCloseFile(FILE *file);
 static StringInfo CopyStringInfo(StringInfo sourceString);
-/* defined in cstore_reader.c */
-DeserializedColumnBlockData** CreateColumnBlockDataBuffers(uint32 columnCount,
-														   bool* columnMask,
-														   uint32 blockRowCount);
-void FreeColumnBlockDataBuffers(DeserializedColumnBlockData **deserializedColumnBlockDataArray,
-						   uint32 columnCount);
 
 
 /*
@@ -168,8 +164,8 @@ CStoreBeginWrite(const char *filename, CompressionType compressionType,
 											   ALLOCSET_DEFAULT_INITSIZE,
 											   ALLOCSET_DEFAULT_MAXSIZE);
 
-	columnMaskArray = palloc(sizeof(bool) * columnCount);
-	memset(columnMaskArray, TRUE, columnCount);
+	columnMaskArray = palloc(columnCount * sizeof(bool));
+	memset(columnMaskArray, true, columnCount);
 	DeserializedColumnBlockData **deserializedColumnBlockData =
 			CreateColumnBlockDataBuffers(columnCount, columnMaskArray, blockRowCount);
 
@@ -193,77 +189,12 @@ CStoreBeginWrite(const char *filename, CompressionType compressionType,
 
 
 /*
- * SerializeBlockData serializes and compresses block data at given block index with given
- * compression type for every column. Memory allocated for type by reference Datums is
- * deallocated after serialization
- */
-static void
-SerializeBlockData(StripeData *stripeData,
-		DeserializedColumnBlockData **deserializedColumnBlockDataArray,
-		StripeSkipList *stripeSkipList, uint32 blockIndex,
-		CompressionType compressionType, StringInfo decompressionBuffer)
-{
-	uint32 columnIndex = 0;
-	const uint32 columnCount = stripeData->columnCount;
-	ColumnBlockSkipNode **blockSkipNodeArray = stripeSkipList->blockSkipNodeArray;
-
-	for (columnIndex = 0; columnIndex < columnCount; columnIndex++)
-	{
-		ColumnBlockSkipNode *blockSkipNode =
-				&blockSkipNodeArray[columnIndex][blockIndex];
-		uint64 maximumLength = 0;
-		bool compressable = false;
-		ColumnData * columnData = stripeData->columnDataArray[columnIndex];
-		ColumnBlockData *serializedBlockData =
-				columnData->blockDataArray[blockIndex];
-		DeserializedColumnBlockData *deserializedBlockData =
-				deserializedColumnBlockDataArray[columnIndex];
-		uint32 rowCount = blockSkipNode->rowCount;
-		StringInfo serializedValueBuffer = NULL;
-		
-		serializedBlockData->serializedExistBuffer =
-				SerializeBoolArray(deserializedBlockData->existsArray, rowCount);
-
-		serializedValueBuffer = deserializedBlockData->uncompressedDataBuffer;
-
-		serializedBlockData->valueCompressionType = COMPRESSION_NONE;
-		serializedBlockData->rowCount = rowCount;
-
-		if (compressionType == COMPRESSION_NONE)
-		{
-			serializedBlockData->serializedValueBuffer = CopyStringInfo(serializedValueBuffer);
-			continue;
-		}
-
-		/* the only other supported compression type is pg_lz for now */
-		Assert(compressionType == COMPRESSION_PG_LZ);
-
-		maximumLength = PGLZ_MAX_OUTPUT(serializedValueBuffer->len);
-		enlargeStringInfo(decompressionBuffer, maximumLength);
-
-		compressable = pglz_compress((const char *) serializedValueBuffer->data,
-									  serializedValueBuffer->len, (PGLZ_Header *)decompressionBuffer->data,
-									  PGLZ_strategy_always);
-		if (compressable)
-		{
-			serializedValueBuffer = decompressionBuffer;
-			serializedValueBuffer->len = VARSIZE(serializedValueBuffer->data);
-			serializedBlockData->valueCompressionType = COMPRESSION_PG_LZ;
-		}
-
-		serializedBlockData->serializedValueBuffer = CopyStringInfo(serializedValueBuffer);
-
-		resetStringInfo(deserializedBlockData->uncompressedDataBuffer);
-	}
-}
-
-
-/*
  * CStoreWriteRow adds a row to the cstore file. If the stripe is not initialized,
- * we create structures to hold stripe data and skip list. Then, we add data for
- * each of the columns and update corresponding skip nodes. Then, current data block
- * is serialized at every rowBlockCount insertion. Then, if row count exceeds
- * stripeMaxRowCount, we flush the stripe, and add its metadata to the table footer.
+ * we create structures to hold stripe data and skip list. Then, we serialize and
+ * append data to serialized value buffer for each of the columns and update
+ * corresponding skip nodes. Then, whole block data is compressed at every
+ * rowBlockCount insertion. Then, if row count exceeds stripeMaxRowCount, we flush
+ * the stripe, and add its metadata to the table footer.
  */
 void
 CStoreWriteRow(TableWriteState *writeState, Datum *columnValues, bool *columnNulls)
@@ -291,7 +222,7 @@ CStoreWriteRow(TableWriteState *writeState, Datum *columnValues, bool *columnNul
 		writeState->decompressionBuffer = makeStringInfo();
 
 		/*
-		 * serializedValueBuffer lives in stripe write memory context so it needs to be
+		 * uncompressedDataBuffer lives in stripe write memory context so it needs to be
 		 * initialized when the stripe is created.
 		 */
 		for (columnIndex = 0; columnIndex < columnCount; columnIndex++)
@@ -324,12 +255,13 @@ CStoreWriteRow(TableWriteState *writeState, Datum *columnValues, bool *columnNul
 			bool columnTypeByValue = attributeForm->attbyval;
 			int columnTypeLength = attributeForm->attlen;
 			Oid columnCollation = attributeForm->attcollation;
+			char columnTypeAlign  = attributeForm->attalign;
 
 			blockData->existsArray[blockRowIndex] = true;
 
 			SerializeSingleDatum(blockData->uncompressedDataBuffer,
 								 columnValues[columnIndex], columnTypeByValue,
-								 columnTypeLength, attributeForm->attalign);
+								 columnTypeLength, columnTypeAlign);
 
 			UpdateBlockSkipNodeMinMax(blockSkipNode, columnValues[columnIndex],
 									  columnTypeByValue, columnTypeLength,
@@ -344,10 +276,7 @@ CStoreWriteRow(TableWriteState *writeState, Datum *columnValues, bool *columnNul
 	/* last row of the block is inserted serialize the block */
 	if (blockRowIndex == blockRowCount - 1 )
 	{
-		SerializeBlockData(stripeData,
-						   writeState->deserializedColumnBlockDataArray,
-						   stripeSkipList, blockIndex, writeState->compressionType,
-						   writeState->decompressionBuffer);
+		SerializeBlockData(writeState, blockIndex, blockRowCount);
 	}
 
 	stripeData->rowCount++;
@@ -579,7 +508,6 @@ FlushStripe(TableWriteState *writeState)
 	StripeData *stripeData = writeState->stripeData;
 	StripeSkipList *stripeSkipList = writeState->stripeSkipList;
 	ColumnBlockSkipNode **columnSkipNodeArray = stripeSkipList->blockSkipNodeArray;
-	CompressionType compressionType = writeState->compressionType;
 	TupleDesc tupleDescriptor = writeState->tupleDescriptor;
 	uint32 columnCount = tupleDescriptor->natts;
 	uint32 blockCount = stripeSkipList->blockCount;
@@ -593,10 +521,7 @@ FlushStripe(TableWriteState *writeState)
 	 */
 	if (lastBlockRowCount > 0)
 	{
-		SerializeBlockData(stripeData,
-						   writeState->deserializedColumnBlockDataArray,
-						   stripeSkipList, lastBlockIndex, compressionType,
-						   writeState->decompressionBuffer);
+		SerializeBlockData(writeState, lastBlockIndex, lastBlockRowCount);
 	}
 
 	/* update buffer sizes and positions in stripe skip list */
@@ -801,13 +726,14 @@ SerializeBoolArray(bool *boolArray, uint32 boolArrayLength)
  * provided string info buffer.
  */
 static void
-SerializeSingleDatum(StringInfo datumBuffer, Datum datum, bool datumTypeByValue, int datumTypeLength, char datumTypeAlign)
+SerializeSingleDatum(StringInfo datumBuffer, Datum datum, bool datumTypeByValue,
+					 int datumTypeLength, char datumTypeAlign)
 {
 	uint32 datumLength = att_addlength_datum(0, datumTypeLength, datum);
 	uint32 datumLengthAligned = att_align_nominal(datumLength, datumTypeAlign);
 	char *currentDatumDataPointer = NULL;
 
-	enlargeStringInfo(datumBuffer, datumBuffer->len + datumLengthAligned);
+	enlargeStringInfo(datumBuffer, datumLengthAligned);
 
 	currentDatumDataPointer = datumBuffer->data + datumBuffer->len;
 	memset(currentDatumDataPointer, 0, datumLengthAligned);
@@ -820,8 +746,7 @@ SerializeSingleDatum(StringInfo datumBuffer, Datum datum, bool datumTypeByValue,
 		}
 		else
 		{
-			memcpy(currentDatumDataPointer, DatumGetPointer(datum),
-					datumTypeLength);
+			memcpy(currentDatumDataPointer, DatumGetPointer(datum), datumTypeLength);
 		}
 	}
 	else
@@ -831,6 +756,93 @@ SerializeSingleDatum(StringInfo datumBuffer, Datum datum, bool datumTypeByValue,
 	}
 	
 	datumBuffer->len += datumLengthAligned;
+}
+
+
+/*
+ * SerializeBlockData serializes and compresses block data at given block index with given
+ * compression type for every column.
+ */
+static void
+SerializeBlockData(TableWriteState *writeState, uint32 blockIndex, uint32 rowCount)
+{
+	uint32 columnIndex = 0;
+	StripeData *stripeData = writeState->stripeData;
+	DeserializedColumnBlockData **deserializedColumnBlockDataArray =
+			writeState->deserializedColumnBlockDataArray;
+	CompressionType requestedCompressionType = writeState->compressionType;
+	const uint32 columnCount = stripeData->columnCount;
+	StringInfo decompressionBuffer = writeState->decompressionBuffer;
+
+	/* serialize exist values, data values are already serialized */
+	for (columnIndex = 0; columnIndex < columnCount; columnIndex++)
+	{
+		ColumnData *columnData = stripeData->columnDataArray[columnIndex];
+		ColumnBlockData *serializedBlockData =
+				columnData->blockDataArray[blockIndex];
+		DeserializedColumnBlockData *deserializedBlockData =
+				deserializedColumnBlockDataArray[columnIndex];
+
+		serializedBlockData->serializedExistBuffer =
+				SerializeBoolArray(deserializedBlockData->existsArray, rowCount);
+		serializedBlockData->rowCount = rowCount;
+	}
+
+
+	/*
+	 * check and compress value buffers, if a value buffer is not compressable
+	 * then keep it as uncompressed, store compression information.
+	 */
+	for (columnIndex = 0; columnIndex < columnCount; columnIndex++)
+	{
+		uint64 maximumLength = 0;
+		bool compressable = false;
+		ColumnData *columnData = stripeData->columnDataArray[columnIndex];
+		ColumnBlockData *serializedBlockData =
+				columnData->blockDataArray[blockIndex];
+		DeserializedColumnBlockData *deserializedBlockData =
+				deserializedColumnBlockDataArray[columnIndex];
+		StringInfo serializedValueBuffer = NULL;
+		CompressionType actualCompressionType = COMPRESSION_NONE;
+
+		serializedValueBuffer = deserializedBlockData->uncompressedDataBuffer;
+
+		/* the only other supported compression type is pg_lz for now */
+		Assert(requestedCompressionType == COMPRESSION_NONE ||
+			   requestedCompressionType == COMPRESSION_PG_LZ);
+
+		/*
+		 * if serializedValueBuffer is be compressed, update serializedValueBuffer
+		 * with compressed data and store compression type.
+		 */
+		if (requestedCompressionType == COMPRESSION_PG_LZ)
+		{
+			maximumLength = PGLZ_MAX_OUTPUT(serializedValueBuffer->len);
+
+			resetStringInfo(decompressionBuffer);
+			enlargeStringInfo(decompressionBuffer, maximumLength);
+
+			compressable = pglz_compress((const char *) serializedValueBuffer->data,
+										  serializedValueBuffer->len,
+										  (PGLZ_Header *)decompressionBuffer->data,
+										  PGLZ_strategy_always);
+
+			if (compressable)
+			{
+				serializedValueBuffer = decompressionBuffer;
+				serializedValueBuffer->len = VARSIZE(serializedValueBuffer->data);
+				actualCompressionType = COMPRESSION_PG_LZ;
+			}
+		}
+
+		/* store (compressed) value buffer */
+		serializedBlockData->valueCompressionType = actualCompressionType;
+		serializedBlockData->serializedValueBuffer =
+				CopyStringInfo(serializedValueBuffer);
+
+		/* uncompressedDataBuffer needs to be reset for next block's data */
+		resetStringInfo(deserializedBlockData->uncompressedDataBuffer);
+	}
 }
 
 
@@ -1005,19 +1017,22 @@ SyncAndCloseFile(FILE *file)
 }
 
 
-/* CopyStringInfo creates a deep copy of given source string */
-StringInfo
+/*
+ * CopyStringInfo creates a deep copy of given source string allocating only needed
+ * amount of memory.
+ */
+static StringInfo
 CopyStringInfo(StringInfo sourceString)
 {
-	StringInfo copiedString = palloc0(sizeof(StringInfoData));
-	
+	StringInfo targetString = palloc0(sizeof(StringInfoData));
+
 	if (sourceString->len > 0)
 	{
-		copiedString->data = palloc0(sourceString->len);
-		copiedString->len = sourceString->len;
-		copiedString->maxlen = sourceString->len;
-		memcpy(copiedString->data, sourceString->data, sourceString->len);
+		targetString->data = palloc0(sourceString->len);
+		targetString->len = sourceString->len;
+		targetString->maxlen = sourceString->len;
+		memcpy(targetString->data, sourceString->data, sourceString->len);
 	}
-	
-	return copiedString;
+
+	return targetString;
 }
