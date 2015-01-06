@@ -170,13 +170,13 @@ typedef struct StripeSkipList
 } StripeSkipList;
 
 
-typedef struct DeserializedColumnBlockData
+typedef struct BlockDataBuffers
 {
 	bool *existsArray;
 	Datum *valueArray;
-	StringInfo uncompressedDataBuffer;
+	StringInfo serializedValueBuffer;
 
-} DeserializedColumnBlockData;
+} BlockDataBuffers;
 
 
 /*
@@ -186,8 +186,8 @@ typedef struct DeserializedColumnBlockData
  */
 typedef struct ColumnBlockData
 {
-	StringInfo serializedExistBuffer;
-	StringInfo serializedValueBuffer;
+	StringInfo existBuffer;
+	StringInfo valueBuffer;
 	CompressionType valueCompressionType;
 	uint32 rowCount;
 
@@ -249,11 +249,10 @@ typedef struct TableReadState
 	StripeData *stripeData;
 	uint32 readStripeCount;
 	uint64 stripeReadRowCount;
-	DeserializedColumnBlockData **deserializedColumnBlockDataArray;
+	BlockDataBuffers **blockDataBuffersArray;
 	int32 deserializedBlockIndex;
 
 } TableReadState;
-
 
 
 /* TableWriteState represents state of a cstore file write operation. */
@@ -272,7 +271,7 @@ typedef struct TableWriteState
 	StripeData *stripeData;
 	StripeSkipList *stripeSkipList;
 	uint32 stripeMaxRowCount;
-	DeserializedColumnBlockData **deserializedColumnBlockDataArray;
+	BlockDataBuffers **blockDataBuffersArray;
 	StringInfo decompressionBuffer;
 
 } TableWriteState;
@@ -314,11 +313,10 @@ extern void CStoreEndRead(TableReadState *state);
 /* Function declarations for common functions */
 extern FmgrInfo * GetFunctionInfoOrNull(Oid typeId, Oid accessMethodId,
 										int16 procedureId);
-extern DeserializedColumnBlockData ** CreateColumnBlockDataBuffers(uint32 columnCount,
-																   bool *columnMask,
-																   uint32 blockRowCount);
-extern void FreeColumnBlockDataBuffers(DeserializedColumnBlockData
-									   **deserializedBlockDataArray,
+extern BlockDataBuffers ** CreateBlockDataBuffersArray(uint32 columnCount,
+													   bool *columnMask,
+													   uint32 blockRowCount);
+extern void FreeColumnBlockDataBuffers(BlockDataBuffers **blockDataBuffersArray,
 									   uint32 columnCount);
 
 #endif   /* CSTORE_FDW_H */ 

@@ -84,6 +84,7 @@ CStoreBeginWrite(const char *filename, CompressionType compressionType,
 	struct stat statBuffer;
 	int statResult = 0;
 	bool *columnMaskArray = NULL;
+	BlockDataBuffers **blockDataBuffers = NULL;
 
 	tableFooterFilename = makeStringInfo();
 	appendStringInfo(tableFooterFilename, "%s%s", filename, CSTORE_FOOTER_FILE_SUFFIX);
@@ -166,8 +167,9 @@ CStoreBeginWrite(const char *filename, CompressionType compressionType,
 
 	columnMaskArray = palloc(columnCount * sizeof(bool));
 	memset(columnMaskArray, true, columnCount);
-	DeserializedColumnBlockData **deserializedColumnBlockData =
-			CreateColumnBlockDataBuffers(columnCount, columnMaskArray, blockRowCount);
+
+	blockDataBuffers = CreateBlockDataBuffersArray(columnCount, columnMaskArray,
+												   blockRowCount);
 
 	writeState = palloc0(sizeof(TableWriteState));
 	writeState->tableFile = tableFile;
@@ -181,7 +183,7 @@ CStoreBeginWrite(const char *filename, CompressionType compressionType,
 	writeState->stripeData = NULL;
 	writeState->stripeSkipList = NULL;
 	writeState->stripeWriteContext = stripeWriteContext;
-	writeState->deserializedColumnBlockDataArray = deserializedColumnBlockData;
+	writeState->blockDataBuffersArray = blockDataBuffers;
 	writeState->decompressionBuffer = NULL;
 
 	return writeState;
@@ -207,8 +209,7 @@ CStoreWriteRow(TableWriteState *writeState, Datum *columnValues, bool *columnNul
 	uint32 columnCount = writeState->tupleDescriptor->natts;
 	TableFooter *tableFooter = writeState->tableFooter;
 	const uint32 blockRowCount = tableFooter->blockRowCount;
-	DeserializedColumnBlockData **deserializedBlockDataArray =
-			writeState->deserializedColumnBlockDataArray;
+	BlockDataBuffers **blockDataBuffersArray = writeState->blockDataBuffersArray;
 	MemoryContext oldContext = MemoryContextSwitchTo(writeState->stripeWriteContext);
 
 	if (stripeData == NULL)
@@ -222,13 +223,13 @@ CStoreWriteRow(TableWriteState *writeState, Datum *columnValues, bool *columnNul
 		writeState->decompressionBuffer = makeStringInfo();
 
 		/*
-		 * uncompressedDataBuffer lives in stripe write memory context so it needs to be
+		 * serializedValueBuffer lives in stripe write memory context so it needs to be
 		 * initialized when the stripe is created.
 		 */
 		for (columnIndex = 0; columnIndex < columnCount; columnIndex++)
 		{
-			DeserializedColumnBlockData *blockData = deserializedBlockDataArray[columnIndex];
-			blockData->uncompressedDataBuffer = makeStringInfo();
+			BlockDataBuffers *blockDataBuffers = blockDataBuffersArray[columnIndex];
+			blockDataBuffers->serializedValueBuffer = makeStringInfo();
 		}
 	}
 
@@ -237,14 +238,14 @@ CStoreWriteRow(TableWriteState *writeState, Datum *columnValues, bool *columnNul
 
 	for (columnIndex = 0; columnIndex < columnCount; columnIndex++)
 	{
-		DeserializedColumnBlockData *blockData = deserializedBlockDataArray[columnIndex];
+		BlockDataBuffers *blockDataBuffers = blockDataBuffersArray[columnIndex];
 		ColumnBlockSkipNode **blockSkipNodeArray = stripeSkipList->blockSkipNodeArray;
 		ColumnBlockSkipNode *blockSkipNode =
 			&blockSkipNodeArray[columnIndex][blockIndex];
 
 		if (columnNulls[columnIndex])
 		{
-			blockData->existsArray[blockRowIndex] = false;
+			blockDataBuffers->existsArray[blockRowIndex] = false;
 		}
 		else
 		{
@@ -257,9 +258,9 @@ CStoreWriteRow(TableWriteState *writeState, Datum *columnValues, bool *columnNul
 			Oid columnCollation = attributeForm->attcollation;
 			char columnTypeAlign  = attributeForm->attalign;
 
-			blockData->existsArray[blockRowIndex] = true;
+			blockDataBuffers->existsArray[blockRowIndex] = true;
 
-			SerializeSingleDatum(blockData->uncompressedDataBuffer,
+			SerializeSingleDatum(blockDataBuffers->serializedValueBuffer,
 								 columnValues[columnIndex], columnTypeByValue,
 								 columnTypeLength, columnTypeAlign);
 
@@ -356,7 +357,7 @@ CStoreEndWrite(TableWriteState *writeState)
 	pfree(writeState->tableFooterFilename->data);
 	pfree(writeState->tableFooterFilename);
 	pfree(writeState->comparisonFunctionArray);
-	FreeColumnBlockDataBuffers(writeState->deserializedColumnBlockDataArray, columnCount);
+	FreeColumnBlockDataBuffers(writeState->blockDataBuffersArray, columnCount);
 	pfree(writeState);
 }
 
@@ -418,27 +419,27 @@ CreateEmptyStripeData(uint32 stripeMaxRowCount, uint32 blockRowCount,
 	uint32 maxBlockCount = (stripeMaxRowCount / blockRowCount) + 1;
 
 	ColumnData **columnDataArray = palloc0(columnCount * sizeof(ColumnData *));
-	DeserializedColumnBlockData **deserializedColumnBlockData =
-			palloc0(columnCount * sizeof(DeserializedColumnBlockData*));
+	BlockDataBuffers **blockDataBuffersArray =
+			palloc0(columnCount * sizeof(BlockDataBuffers*));
 
 	for (columnIndex = 0; columnIndex < columnCount; columnIndex++)
 	{
 		uint32 blockIndex = 0;
 		ColumnBlockData **blockDataArray = NULL;
-		DeserializedColumnBlockData *columnBlockData = palloc0(sizeof(DeserializedColumnBlockData));
+		BlockDataBuffers *blockDataBuffers = palloc0(sizeof(BlockDataBuffers));
 		bool *existsArray = palloc0(blockRowCount * sizeof(bool));
 		Datum *valueArray = palloc0(blockRowCount * sizeof(Datum));
 
-		columnBlockData->existsArray = existsArray;
-		columnBlockData->valueArray = valueArray;
-		columnBlockData->uncompressedDataBuffer = NULL;
-		deserializedColumnBlockData[columnIndex] = columnBlockData;
+		blockDataBuffers->existsArray = existsArray;
+		blockDataBuffers->valueArray = valueArray;
+		blockDataBuffers->serializedValueBuffer = NULL;
+		blockDataBuffersArray[columnIndex] = blockDataBuffers;
 		blockDataArray = palloc0(maxBlockCount * sizeof(ColumnBlockData *));
 		for (blockIndex = 0; blockIndex < maxBlockCount; blockIndex++)
 		{
 			blockDataArray[blockIndex] = palloc0(sizeof(ColumnBlockData));
-			blockDataArray[blockIndex]->serializedExistBuffer = NULL;
-			blockDataArray[blockIndex]->serializedValueBuffer = NULL;
+			blockDataArray[blockIndex]->existBuffer = NULL;
+			blockDataArray[blockIndex]->valueBuffer = NULL;
 			blockDataArray[blockIndex]->rowCount = 0;
 			blockDataArray[blockIndex]->valueCompressionType = COMPRESSION_NONE;
 		}
@@ -535,8 +536,8 @@ FlushStripe(TableWriteState *writeState)
 		for (blockIndex = 0; blockIndex < blockCount; blockIndex++)
 		{
 			ColumnBlockData *blockData = columnData->blockDataArray[blockIndex];
-			uint64 existsBufferSize = blockData->serializedExistBuffer->len;
-			uint64 valueBufferSize = blockData->serializedValueBuffer->len;
+			uint64 existsBufferSize = blockData->existBuffer->len;
+			uint64 valueBufferSize = blockData->valueBuffer->len;
 			CompressionType valueCompressionType = blockData->valueCompressionType;
 			ColumnBlockSkipNode *blockSkipNode = &blockSkipNodeArray[blockIndex];
 
@@ -586,7 +587,7 @@ FlushStripe(TableWriteState *writeState)
 		for (blockIndex = 0; blockIndex < stripeSkipList->blockCount; blockIndex++)
 		{
 			ColumnBlockData *blockData = columnData->blockDataArray[blockIndex];
-			StringInfo existsBuffer = blockData->serializedExistBuffer;
+			StringInfo existsBuffer = blockData->existBuffer;
 
 			WriteToFile(tableFile, existsBuffer->data, existsBuffer->len);
 		}
@@ -594,7 +595,7 @@ FlushStripe(TableWriteState *writeState)
 		for (blockIndex = 0; blockIndex < stripeSkipList->blockCount; blockIndex++)
 		{
 			ColumnBlockData *blockData = columnData->blockDataArray[blockIndex];
-			StringInfo valueBuffer = blockData->serializedValueBuffer;
+			StringInfo valueBuffer = blockData->valueBuffer;
 
 			WriteToFile(tableFile, valueBuffer->data, valueBuffer->len);
 		}
@@ -768,8 +769,7 @@ SerializeBlockData(TableWriteState *writeState, uint32 blockIndex, uint32 rowCou
 {
 	uint32 columnIndex = 0;
 	StripeData *stripeData = writeState->stripeData;
-	DeserializedColumnBlockData **deserializedColumnBlockDataArray =
-			writeState->deserializedColumnBlockDataArray;
+	BlockDataBuffers **blockDataBuffersArray = writeState->blockDataBuffersArray;
 	CompressionType requestedCompressionType = writeState->compressionType;
 	const uint32 columnCount = stripeData->columnCount;
 	StringInfo decompressionBuffer = writeState->decompressionBuffer;
@@ -780,14 +780,12 @@ SerializeBlockData(TableWriteState *writeState, uint32 blockIndex, uint32 rowCou
 		ColumnData *columnData = stripeData->columnDataArray[columnIndex];
 		ColumnBlockData *serializedBlockData =
 				columnData->blockDataArray[blockIndex];
-		DeserializedColumnBlockData *deserializedBlockData =
-				deserializedColumnBlockDataArray[columnIndex];
+		BlockDataBuffers *blockDataBuffers = blockDataBuffersArray[columnIndex];
 
-		serializedBlockData->serializedExistBuffer =
-				SerializeBoolArray(deserializedBlockData->existsArray, rowCount);
+		serializedBlockData->existBuffer =
+				SerializeBoolArray(blockDataBuffers->existsArray, rowCount);
 		serializedBlockData->rowCount = rowCount;
 	}
-
 
 	/*
 	 * check and compress value buffers, if a value buffer is not compressable
@@ -800,12 +798,11 @@ SerializeBlockData(TableWriteState *writeState, uint32 blockIndex, uint32 rowCou
 		ColumnData *columnData = stripeData->columnDataArray[columnIndex];
 		ColumnBlockData *serializedBlockData =
 				columnData->blockDataArray[blockIndex];
-		DeserializedColumnBlockData *deserializedBlockData =
-				deserializedColumnBlockDataArray[columnIndex];
+		BlockDataBuffers *blockDataBuffers = blockDataBuffersArray[columnIndex];
 		StringInfo serializedValueBuffer = NULL;
 		CompressionType actualCompressionType = COMPRESSION_NONE;
 
-		serializedValueBuffer = deserializedBlockData->uncompressedDataBuffer;
+		serializedValueBuffer = blockDataBuffers->serializedValueBuffer;
 
 		/* the only other supported compression type is pg_lz for now */
 		Assert(requestedCompressionType == COMPRESSION_NONE ||
@@ -837,11 +834,11 @@ SerializeBlockData(TableWriteState *writeState, uint32 blockIndex, uint32 rowCou
 
 		/* store (compressed) value buffer */
 		serializedBlockData->valueCompressionType = actualCompressionType;
-		serializedBlockData->serializedValueBuffer =
+		serializedBlockData->valueBuffer =
 				CopyStringInfo(serializedValueBuffer);
 
 		/* uncompressedDataBuffer needs to be reset for next block's data */
-		resetStringInfo(deserializedBlockData->uncompressedDataBuffer);
+		resetStringInfo(blockDataBuffers->serializedValueBuffer);
 	}
 }
 
