@@ -238,12 +238,13 @@ CStoreWriteRow(TableWriteState *writeState, Datum *columnValues, bool *columnNul
 			int columnTypeLength = attributeForm->attlen;
 			Oid columnCollation = attributeForm->attcollation;
 			Datum columnValue = columnValues[columnIndex];
-			bool variableLengthColumn = columnTypeLength == -1;
 
-			if (variableLengthColumn)
+			/* detoast variable length attributes if necessary */
+			if (columnTypeLength == -1)
 			{
-				columnValue  = PointerGetDatum(
-						PG_DETOAST_DATUM(columnValues[columnIndex]));
+				struct varlena *detoastedValue = PG_DETOAST_DATUM(columnValue);
+
+				columnValue  = PointerGetDatum(detoastedValue);
 			}
 
 			blockData->existsArray[blockRowIndex] = true;
