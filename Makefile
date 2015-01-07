@@ -13,7 +13,8 @@ OBJS = cstore.pb-c.o cstore_fdw.o cstore_writer.o cstore_reader.o \
 EXTENSION = cstore_fdw
 DATA = cstore_fdw--1.1.sql cstore_fdw--1.0--1.1.sql
 
-REGRESS = create load query analyze data_types functions block_filtering drop insert copyto
+REGRESS = create load query analyze data_types functions block_filtering drop \
+			insert copyto variable_length 
 EXTRA_CLEAN = cstore.pb-c.h cstore.pb-c.c data/*.cstore data/*.cstore.footer \
               sql/block_filtering.sql sql/create.sql sql/data_types.sql sql/load.sql \
               sql/copyto.sql expected/block_filtering.out expected/create.out \

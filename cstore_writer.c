@@ -237,9 +237,17 @@ CStoreWriteRow(TableWriteState *writeState, Datum *columnValues, bool *columnNul
 			bool columnTypeByValue = attributeForm->attbyval;
 			int columnTypeLength = attributeForm->attlen;
 			Oid columnCollation = attributeForm->attcollation;
+			Datum columnValue = columnValues[columnIndex];
+			bool variableLengthColumn = columnTypeLength == -1;
+
+			if (variableLengthColumn)
+			{
+				columnValue  = PointerGetDatum(
+						PG_DETOAST_DATUM(columnValues[columnIndex]));
+			}
 
 			blockData->existsArray[blockRowIndex] = true;
-			blockData->valueArray[blockRowIndex] = DatumCopy(columnValues[columnIndex],
+			blockData->valueArray[blockRowIndex] = DatumCopy(columnValue,
 															 columnTypeByValue,
 															 columnTypeLength);
 
