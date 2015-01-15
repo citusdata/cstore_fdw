@@ -6,6 +6,7 @@ env:
     - PG_PRELOAD=cstore_fdw
   matrix:
     - PGVERSION=9.3
+    - PGVERSION=9.4
 before_install:
   - sudo apt-get update -qq
   - sudo update-alternatives --remove-all postmaster.1.gz
