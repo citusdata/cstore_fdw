@@ -266,7 +266,6 @@ typedef struct TableWriteState
 	FmgrInfo **comparisonFunctionArray;
 	uint64 currentFileOffset;
 
-
 	MemoryContext stripeWriteContext;
 	StripeData *stripeData;
 	StripeSkipList *stripeSkipList;
