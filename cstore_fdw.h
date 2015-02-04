@@ -172,7 +172,7 @@ typedef struct StripeSkipList
 /*
  * ColumnBlockData represents a block of data in a column. valueArray stores
  * the values of data, and existsArray stores whether a value is present.
- * serializedValueBuffer is used to store (uncompressed) serialized values
+ * valueBuffer is used to store (uncompressed) serialized values
  * referenced by Datum's in valueArray. It is only used for by-reference Datum's.
  * There is a one-to-one correspondence between valueArray and existsArray.
  */
@@ -180,7 +180,9 @@ typedef struct ColumnBlockData
 {
 	bool *existsArray;
 	Datum *valueArray;
-	StringInfo serializedValueBuffer;
+
+	/* valueBuffer keeps actual data for type-by-reference datums from valueArray. */
+	StringInfo valueBuffer;
 
 } ColumnBlockData;
 
@@ -194,10 +196,9 @@ typedef struct ColumnBlockData
  */
 typedef struct ColumnBlockBuffers
 {
-	StringInfo existBuffer;
+	StringInfo existsBuffer;
 	StringInfo valueBuffer;
 	CompressionType valueCompressionType;
-	uint32 rowCount;
 
 } ColumnBlockBuffers;
 
@@ -279,7 +280,13 @@ typedef struct TableWriteState
 	StripeSkipList *stripeSkipList;
 	uint32 stripeMaxRowCount;
 	ColumnBlockData **blockDataArray;
-	StringInfo decompressionBuffer;
+	/*
+	 * compressionBuffer buffer is used as temporary storage during
+	 * data value compression operation. It is kept here to minimize
+	 * memory allocations. It lives in stripeWriteContext and gets
+	 * deallocated when memory context is reset.
+	 */
+	StringInfo compressionBuffer;
 
 } TableWriteState;
 
@@ -320,8 +327,8 @@ extern void CStoreEndRead(TableReadState *state);
 /* Function declarations for common functions */
 extern FmgrInfo * GetFunctionInfoOrNull(Oid typeId, Oid accessMethodId,
 										int16 procedureId);
-extern ColumnBlockData ** CreateBlockDataArray(uint32 columnCount, bool *columnMask,
-											   uint32 blockRowCount);
+extern ColumnBlockData ** CreateEmptyBlockDataArray(uint32 columnCount, bool *columnMask,
+													uint32 blockRowCount);
 extern void FreeColumnBlockDataArray(ColumnBlockData **blockDataArray,
 									 uint32 columnCount);
 

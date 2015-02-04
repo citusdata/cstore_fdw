@@ -23,6 +23,7 @@
 #include "access/htup_details.h"
 #include "access/reloptions.h"
 #include "access/sysattr.h"
+#include "access/tuptoaster.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_foreign_table.h"
 #include "commands/copy.h"
@@ -1725,6 +1726,13 @@ CStoreExecForeignInsert(EState *executorState, ResultRelInfo *relationInfo,
 	TableWriteState *writeState = (TableWriteState*) relationInfo->ri_FdwState;
 
 	Assert(writeState != NULL);
+
+	if(HeapTupleHasExternal(tupleSlot->tts_tuple))
+	{
+		/* detoast any toasted attributes */
+		tupleSlot->tts_tuple = toast_flatten_tuple(tupleSlot->tts_tuple,
+												   tupleSlot->tts_tupleDescriptor);
+	}
 
 	slot_getallattrs(tupleSlot);
 

@@ -169,7 +169,7 @@ CStoreBeginWrite(const char *filename, CompressionType compressionType,
 	columnMaskArray = palloc(columnCount * sizeof(bool));
 	memset(columnMaskArray, true, columnCount);
 
-	blockData = CreateBlockDataArray(columnCount, columnMaskArray, blockRowCount);
+	blockData = CreateEmptyBlockDataArray(columnCount, columnMaskArray, blockRowCount);
 
 	writeState = palloc0(sizeof(TableWriteState));
 	writeState->tableFile = tableFile;
@@ -184,7 +184,7 @@ CStoreBeginWrite(const char *filename, CompressionType compressionType,
 	writeState->stripeSkipList = NULL;
 	writeState->stripeWriteContext = stripeWriteContext;
 	writeState->blockDataArray = blockData;
-	writeState->decompressionBuffer = NULL;
+	writeState->compressionBuffer = NULL;
 
 	return writeState;
 }
@@ -220,7 +220,7 @@ CStoreWriteRow(TableWriteState *writeState, Datum *columnValues, bool *columnNul
 												   blockRowCount, columnCount);
 		writeState->stripeBuffers = stripeBuffers;
 		writeState->stripeSkipList = stripeSkipList;
-		writeState->decompressionBuffer = makeStringInfo();
+		writeState->compressionBuffer = makeStringInfo();
 
 		/*
 		 * serializedValueBuffer lives in stripe write memory context so it needs to be
@@ -229,7 +229,7 @@ CStoreWriteRow(TableWriteState *writeState, Datum *columnValues, bool *columnNul
 		for (columnIndex = 0; columnIndex < columnCount; columnIndex++)
 		{
 			ColumnBlockData *blockData = blockDataArray[columnIndex];
-			blockData->serializedValueBuffer = makeStringInfo();
+			blockData->valueBuffer = makeStringInfo();
 		}
 	}
 
@@ -257,21 +257,11 @@ CStoreWriteRow(TableWriteState *writeState, Datum *columnValues, bool *columnNul
 			int columnTypeLength = attributeForm->attlen;
 			Oid columnCollation = attributeForm->attcollation;
 			char columnTypeAlign  = attributeForm->attalign;
-			Datum columnValue = columnValues[columnIndex];
-
-			/* detoast variable length attributes if necessary */
-			if (columnTypeLength == -1)
-			{
-				struct varlena *detoastedValue = PG_DETOAST_DATUM(columnValue);
-
-				columnValue  = PointerGetDatum(detoastedValue);
-			}
 
 			blockData->existsArray[blockRowIndex] = true;
 
-			SerializeSingleDatum(blockData->serializedValueBuffer,
-								 columnValue, columnTypeByValue,
-								 columnTypeLength, columnTypeAlign);
+			SerializeSingleDatum(blockData->valueBuffer, columnValues[columnIndex],
+								 columnTypeByValue, columnTypeLength, columnTypeAlign);
 
 			UpdateBlockSkipNodeMinMax(blockSkipNode, columnValues[columnIndex],
 									  columnTypeByValue, columnTypeLength,
@@ -440,15 +430,14 @@ CreateEmptyStripeBuffers(uint32 stripeMaxRowCount, uint32 blockRowCount,
 
 		blockData->existsArray = existsArray;
 		blockData->valueArray = valueArray;
-		blockData->serializedValueBuffer = NULL;
+		blockData->valueBuffer = NULL;
 		blockDataArray[columnIndex] = blockData;
 		blockBuffersArray = palloc0(maxBlockCount * sizeof(ColumnBlockBuffers *));
 		for (blockIndex = 0; blockIndex < maxBlockCount; blockIndex++)
 		{
 			blockBuffersArray[blockIndex] = palloc0(sizeof(ColumnBlockBuffers));
-			blockBuffersArray[blockIndex]->existBuffer = NULL;
+			blockBuffersArray[blockIndex]->existsBuffer = NULL;
 			blockBuffersArray[blockIndex]->valueBuffer = NULL;
-			blockBuffersArray[blockIndex]->rowCount = 0;
 			blockBuffersArray[blockIndex]->valueCompressionType = COMPRESSION_NONE;
 		}
 
@@ -498,8 +487,8 @@ CreateEmptyStripeSkipList(uint32 stripeMaxRowCount, uint32 blockRowCount,
 /*
  * FlushStripe flushes current stripe data into the file. The function first ensures
  * the last data block for each column is properly serialized and compressed. Then, 
- * the function creates the skip list and footer buffers. Finally, the function flushes the skip list, data, and footer buffers
- * to the file.
+ * the function creates the skip list and footer buffers. Finally, the function
+ * flushes the skip list, data, and footer buffers to the file.
  */
 static StripeMetadata
 FlushStripe(TableWriteState *writeState)
@@ -543,8 +532,9 @@ FlushStripe(TableWriteState *writeState)
 
 		for (blockIndex = 0; blockIndex < blockCount; blockIndex++)
 		{
-			ColumnBlockBuffers *blockBuffers = columnBuffers->blockBuffersArray[blockIndex];
-			uint64 existsBufferSize = blockBuffers->existBuffer->len;
+			ColumnBlockBuffers *blockBuffers =
+					columnBuffers->blockBuffersArray[blockIndex];
+			uint64 existsBufferSize = blockBuffers->existsBuffer->len;
 			uint64 valueBufferSize = blockBuffers->valueBuffer->len;
 			CompressionType valueCompressionType = blockBuffers->valueCompressionType;
 			ColumnBlockSkipNode *blockSkipNode = &blockSkipNodeArray[blockIndex];
@@ -594,15 +584,17 @@ FlushStripe(TableWriteState *writeState)
 
 		for (blockIndex = 0; blockIndex < stripeSkipList->blockCount; blockIndex++)
 		{
-			ColumnBlockBuffers *blockBuffers = columnBuffers->blockBuffersArray[blockIndex];
-			StringInfo existsBuffer = blockBuffers->existBuffer;
+			ColumnBlockBuffers *blockBuffers =
+					columnBuffers->blockBuffersArray[blockIndex];
+			StringInfo existsBuffer = blockBuffers->existsBuffer;
 
 			WriteToFile(tableFile, existsBuffer->data, existsBuffer->len);
 		}
 
 		for (blockIndex = 0; blockIndex < stripeSkipList->blockCount; blockIndex++)
 		{
-			ColumnBlockBuffers *blockBuffers = columnBuffers->blockBuffersArray[blockIndex];
+			ColumnBlockBuffers *blockBuffers =
+					columnBuffers->blockBuffersArray[blockIndex];
 			StringInfo valueBuffer = blockBuffers->valueBuffer;
 
 			WriteToFile(tableFile, valueBuffer->data, valueBuffer->len);
@@ -780,7 +772,7 @@ SerializeBlockData(TableWriteState *writeState, uint32 blockIndex, uint32 rowCou
 	ColumnBlockData **blockDataArray = writeState->blockDataArray;
 	CompressionType requestedCompressionType = writeState->compressionType;
 	const uint32 columnCount = stripeBuffers->columnCount;
-	StringInfo decompressionBuffer = writeState->decompressionBuffer;
+	StringInfo compressionBuffer = writeState->compressionBuffer;
 
 	/* serialize exist values, data values are already serialized */
 	for (columnIndex = 0; columnIndex < columnCount; columnIndex++)
@@ -789,8 +781,7 @@ SerializeBlockData(TableWriteState *writeState, uint32 blockIndex, uint32 rowCou
 		ColumnBlockBuffers *blockBuffers = columnBuffers->blockBuffersArray[blockIndex];
 		ColumnBlockData *blockData = blockDataArray[columnIndex];
 
-		blockBuffers->existBuffer = SerializeBoolArray(blockData->existsArray, rowCount);
-		blockBuffers->rowCount = rowCount;
+		blockBuffers->existsBuffer = SerializeBoolArray(blockData->existsArray, rowCount);
 	}
 
 	/*
@@ -807,7 +798,7 @@ SerializeBlockData(TableWriteState *writeState, uint32 blockIndex, uint32 rowCou
 		StringInfo serializedValueBuffer = NULL;
 		CompressionType actualCompressionType = COMPRESSION_NONE;
 
-		serializedValueBuffer = blockData->serializedValueBuffer;
+		serializedValueBuffer = blockData->valueBuffer;
 
 		/* the only other supported compression type is pg_lz for now */
 		Assert(requestedCompressionType == COMPRESSION_NONE ||
@@ -821,17 +812,17 @@ SerializeBlockData(TableWriteState *writeState, uint32 blockIndex, uint32 rowCou
 		{
 			maximumLength = PGLZ_MAX_OUTPUT(serializedValueBuffer->len);
 
-			resetStringInfo(decompressionBuffer);
-			enlargeStringInfo(decompressionBuffer, maximumLength);
+			resetStringInfo(compressionBuffer);
+			enlargeStringInfo(compressionBuffer, maximumLength);
 
 			compressable = pglz_compress((const char *) serializedValueBuffer->data,
 										  serializedValueBuffer->len,
-										  (PGLZ_Header *)decompressionBuffer->data,
+										  (PGLZ_Header *)compressionBuffer->data,
 										  PGLZ_strategy_always);
 
 			if (compressable)
 			{
-				serializedValueBuffer = decompressionBuffer;
+				serializedValueBuffer = compressionBuffer;
 				serializedValueBuffer->len = VARSIZE(serializedValueBuffer->data);
 				actualCompressionType = COMPRESSION_PG_LZ;
 			}
@@ -841,8 +832,8 @@ SerializeBlockData(TableWriteState *writeState, uint32 blockIndex, uint32 rowCou
 		blockBuffers->valueCompressionType = actualCompressionType;
 		blockBuffers->valueBuffer = CopyStringInfo(serializedValueBuffer);
 
-		/* uncompressedDataBuffer needs to be reset for next block's data */
-		resetStringInfo(blockData->serializedValueBuffer);
+		/* valueBuffer needs to be reset for next block's data */
+		resetStringInfo(blockData->valueBuffer);
 	}
 }
 
