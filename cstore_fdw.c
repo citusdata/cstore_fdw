@@ -1691,6 +1691,7 @@ CStoreBeginForeignModify(ModifyTableState *modifyTableState,
 	CStoreFdwOptions *cstoreFdwOptions = NULL;
 	TupleDesc tupleDescriptor = NULL;
 	TableWriteState *writeState = NULL;
+	Relation relation = NULL;
 
 	/* if Explain with no Analyze, do nothing */
 	if (executorFlags & EXEC_FLAG_EXPLAIN_ONLY)
@@ -1701,6 +1702,7 @@ CStoreBeginForeignModify(ModifyTableState *modifyTableState,
 	Assert (modifyTableState->operation == CMD_INSERT);
 
 	foreignTableOid = RelationGetRelid(relationInfo->ri_RelationDesc);
+	relation = heap_open(foreignTableOid, ExclusiveLock);
 	cstoreFdwOptions = CStoreGetOptions(foreignTableOid);
 	tupleDescriptor = RelationGetDescr(relationInfo->ri_RelationDesc);
 
@@ -1710,6 +1712,7 @@ CStoreBeginForeignModify(ModifyTableState *modifyTableState,
 								  cstoreFdwOptions->blockRowCount,
 								  tupleDescriptor);
 
+	writeState->relation = relation;
 	relationInfo->ri_FdwState = (void *) writeState;
 }
 
@@ -1743,6 +1746,9 @@ CStoreEndForeignModify(EState *executorState, ResultRelInfo *relationInfo)
 	/* writeState is NULL during Explain queries */
 	if (writeState != NULL)
 	{
+		Relation relation = writeState->relation;
+
 		CStoreEndWrite(writeState);
+		heap_close(relation, ExclusiveLock);
 	}
 }

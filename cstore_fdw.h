@@ -19,6 +19,7 @@
 #include "catalog/pg_foreign_server.h"
 #include "catalog/pg_foreign_table.h"
 #include "lib/stringinfo.h"
+#include "utils/rel.h"
 
 
 /* Defines for valid option names */
@@ -257,6 +258,7 @@ typedef struct TableWriteState
 	StripeData *stripeData;
 	StripeSkipList *stripeSkipList;
 	uint32 stripeMaxRowCount;
+	Relation relation;
 
 } TableWriteState;
 
