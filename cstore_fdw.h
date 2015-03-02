@@ -19,6 +19,7 @@
 #include "catalog/pg_foreign_server.h"
 #include "catalog/pg_foreign_table.h"
 #include "lib/stringinfo.h"
+#include "utils/rel.h"
 
 
 /* Defines for valid option names */
@@ -274,6 +275,7 @@ typedef struct TableWriteState
 	TupleDesc tupleDescriptor;
 	FmgrInfo **comparisonFunctionArray;
 	uint64 currentFileOffset;
+	Relation relation;
 
 	MemoryContext stripeWriteContext;
 	StripeBuffers *stripeBuffers;
