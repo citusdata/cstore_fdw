@@ -36,7 +36,7 @@
 
 /* static function declarations */
 static StripeBuffers * LoadFilteredStripeBuffers(FILE *tableFile,
-										  	  	 StripeMetadata *stripeMetadata,
+												 StripeMetadata *stripeMetadata,
 												 TupleDesc tupleDescriptor,
 												 List *projectedColumnList,
 												 List *whereClauseList);
@@ -45,10 +45,10 @@ static void ReadStripeNextRow(StripeBuffers *stripeBuffers, List *projectedColum
 							  ColumnBlockData **blockDataArray,
 							  Datum *columnValues, bool *columnNulls);
 static ColumnBuffers * LoadColumnBuffers(FILE *tableFile,
-								   ColumnBlockSkipNode *blockSkipNodeArray,
-								   uint32 blockCount, uint64 existsFileOffset,
-								   uint64 valueFileOffset,
-								   Form_pg_attribute attributeForm);
+										 ColumnBlockSkipNode *blockSkipNodeArray,
+										 uint32 blockCount, uint64 existsFileOffset,
+										 uint64 valueFileOffset,
+										 Form_pg_attribute attributeForm);
 static StripeFooter * LoadStripeFooter(FILE *tableFile, StripeMetadata *stripeMetadata,
 									   uint32 columnCount);
 static StripeSkipList * LoadStripeSkipList(FILE *tableFile,
@@ -81,6 +81,7 @@ static StringInfo ReadFromFile(FILE *file, uint64 offset, uint32 size);
 static StringInfo DecompressBuffer(StringInfo buffer, CompressionType compressionType);
 static void ResetUncompressedBlockData(ColumnBlockData **blockDataArray,
 									   uint32 columnCount);
+
 
 /*
  * CStoreBeginRead initializes a cstore read operation. This function returns a
@@ -255,9 +256,9 @@ CStoreReadNextRow(TableReadState *readState, Datum *columnValues, bool *columnNu
 
 		stripeMetadata = list_nth(stripeMetadataList, readState->readStripeCount);
 		stripeBuffers = LoadFilteredStripeBuffers(readState->tableFile, stripeMetadata,
-											   readState->tupleDescriptor,
-											   readState->projectedColumnList,
-											   readState->whereClauseList);
+												  readState->tupleDescriptor,
+												  readState->projectedColumnList,
+												  readState->whereClauseList);
 		readState->readStripeCount++;
 
 		MemoryContextSwitchTo(oldContext);
@@ -283,7 +284,7 @@ CStoreReadNextRow(TableReadState *readState, Datum *columnValues, bool *columnNu
 		uint32 stripeRowCount = 0;
 
 		stripeRowCount = readState->stripeBuffers->rowCount;
-		lastBlockIndex =  stripeRowCount / tableFooter->blockRowCount;
+		lastBlockIndex = stripeRowCount / tableFooter->blockRowCount;
 		if (blockIndex == lastBlockIndex)
 		{
 			blockRowCount = stripeRowCount % tableFooter->blockRowCount;
@@ -336,13 +337,12 @@ CStoreEndRead(TableReadState *readState)
 }
 
 
-
 /*
  * CreateEmptyBlockDataArray creates data buffers to keep deserialized exist and
  * value arrays for requested columns in columnMask.
  */
 ColumnBlockData **
-CreateEmptyBlockDataArray(uint32 columnCount, bool* columnMask, uint32 blockRowCount)
+CreateEmptyBlockDataArray(uint32 columnCount, bool *columnMask, uint32 blockRowCount)
 {
 	uint32 columnIndex = 0;
 	ColumnBlockData **blockDataArray = palloc0(columnCount * sizeof(ColumnBlockData*));
@@ -363,7 +363,6 @@ CreateEmptyBlockDataArray(uint32 columnCount, bool* columnMask, uint32 blockRowC
 	
 	return blockDataArray;
 }
-
 
 
 /*
@@ -391,7 +390,6 @@ FreeColumnBlockDataArray(ColumnBlockData **blockDataArray, uint32 columnCount)
 }
 
 
-
 /*
  * LoadFilteredStripeBuffers reads serialized stripe data from the given file.
  * The function skips over blocks whose rows are refuted by restriction qualifiers,
@@ -399,7 +397,7 @@ FreeColumnBlockDataArray(ColumnBlockData **blockDataArray, uint32 columnCount)
  */
 static StripeBuffers *
 LoadFilteredStripeBuffers(FILE *tableFile, StripeMetadata *stripeMetadata,
-					  	  TupleDesc tupleDescriptor, List *projectedColumnList,
+						  TupleDesc tupleDescriptor, List *projectedColumnList,
 						  List *whereClauseList)
 {
 	StripeBuffers *stripeBuffers = NULL;
@@ -493,7 +491,6 @@ ReadStripeNextRow(StripeBuffers *stripeBuffers, List *projectedColumnList,
 }
 
 
-
 /*
  * LoadColumnBuffers reads serialized column data from the given file. These
  * column data are laid out as sequential blocks in the file; and block positions
@@ -501,7 +498,7 @@ ReadStripeNextRow(StripeBuffers *stripeBuffers, List *projectedColumnList,
  */
 static ColumnBuffers *
 LoadColumnBuffers(FILE *tableFile, ColumnBlockSkipNode *blockSkipNodeArray,
-			 	  uint32 blockCount, uint64 existsFileOffset, uint64 valueFileOffset,
+				  uint32 blockCount, uint64 existsFileOffset, uint64 valueFileOffset,
 				  Form_pg_attribute attributeForm)
 {
 	ColumnBuffers *columnBuffers = NULL;
@@ -544,7 +541,7 @@ LoadColumnBuffers(FILE *tableFile, ColumnBlockSkipNode *blockSkipNodeArray,
 
 	columnBuffers = palloc0(sizeof(ColumnBuffers));
 	columnBuffers->blockBuffersArray = blockBuffersArray;
-	
+
 	return columnBuffers;
 }
 

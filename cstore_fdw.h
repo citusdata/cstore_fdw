@@ -170,6 +170,7 @@ typedef struct StripeSkipList
 
 } StripeSkipList;
 
+
 /*
  * ColumnBlockData represents a block of data in a column. valueArray stores
  * the values of data, and existsArray stores whether a value is present.
@@ -333,5 +334,6 @@ extern ColumnBlockData ** CreateEmptyBlockDataArray(uint32 columnCount, bool *co
 													uint32 blockRowCount);
 extern void FreeColumnBlockDataArray(ColumnBlockData **blockDataArray,
 									 uint32 columnCount);
+
 
 #endif   /* CSTORE_FDW_H */ 

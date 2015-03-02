@@ -274,7 +274,7 @@ CStoreWriteRow(TableWriteState *writeState, Datum *columnValues, bool *columnNul
 	stripeSkipList->blockCount = blockIndex + 1;
 
 	/* last row of the block is inserted serialize the block */
-	if (blockRowIndex == blockRowCount - 1 )
+	if (blockRowIndex == blockRowCount - 1)
 	{
 		SerializeBlockData(writeState, blockIndex, blockRowCount);
 	}
