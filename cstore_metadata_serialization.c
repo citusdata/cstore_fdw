@@ -5,7 +5,7 @@
  * This file contains function definitions for serializing/deserializing cstore
  * metadata.
  *
- * Copyright (c) 2014, Citus Data, Inc.
+ * Copyright (c) 2015, Citus Data, Inc.
  *
  * $Id$
  *

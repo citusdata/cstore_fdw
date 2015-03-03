@@ -6,7 +6,7 @@
  * includes the logic for reading file level metadata, reading row stripes,
  * and skipping unrelated row blocks and columns.
  *
- * Copyright (c) 2014, Citus Data, Inc.
+ * Copyright (c) 2015, Citus Data, Inc.
  *
  * $Id$
  *

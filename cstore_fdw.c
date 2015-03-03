@@ -7,7 +7,7 @@
  * provided by cstore_reader and cstore_writer for reading and writing cstore
  * files.
  *
- * Copyright (c) 2014, Citus Data, Inc.
+ * Copyright (c) 2015, Citus Data, Inc.
  *
  * $Id$
  *

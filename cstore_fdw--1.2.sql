@@ -1,4 +1,4 @@
-/* cstore_fdw/cstore_fdw--1.1.sql */
+/* cstore_fdw/cstore_fdw--1.2.sql */
 
 -- complain if script is sourced in psql, rather than via CREATE EXTENSION
 \echo Use "CREATE EXTENSION cstore_fdw" to load this file. \quit

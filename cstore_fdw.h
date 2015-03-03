@@ -4,7 +4,7 @@
  *
  * Type and function declarations for CStore foreign data wrapper.
  *
- * Copyright (c) 2014, Citus Data, Inc.
+ * Copyright (c) 2015, Citus Data, Inc.
  *
  * $Id$
  *
@@ -47,7 +47,7 @@
 /* CStore file signature */
 #define CSTORE_MAGIC_NUMBER "citus_cstore"
 #define CSTORE_VERSION_MAJOR 1
-#define CSTORE_VERSION_MINOR 1
+#define CSTORE_VERSION_MINOR 2
 
 /* miscellaneous defines */
 #define CSTORE_FDW_NAME "cstore_fdw"
