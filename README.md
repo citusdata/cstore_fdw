@@ -101,7 +101,7 @@ To load or append data into a cstore table, you have two options:
 * You can use the ```INSERT INTO cstore_table SELECT ...``` syntax to load or
   append data from another table.
 
-You can use the [```ANALYZE``` command][anlayze-command] to collect statistics
+You can use the [```ANALYZE``` command][analyze-command] to collect statistics
 about the table. These statistics help the query planner to help determine the
 most efficient execution plan for each query.
 
