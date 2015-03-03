@@ -7,7 +7,13 @@ cstore_fdw
 This extension implements a columnar store for PostgreSQL. Columnar stores
 provide notable benefits for analytic use-cases where data is loaded in batches.
 
-The extension uses the Optimized Row Columnar (ORC) format for its data layout.
+Join the [Mailing List][mailing-list] to stay on top of the latest developments.
+
+
+Introduction
+------------
+
+This extension uses the Optimized Row Columnar (ORC) format for its data layout.
 ORC improves upon the RCFile format developed at Facebook, and brings the
 following benefits:
 
@@ -308,6 +314,7 @@ For all types of questions and comments about the wrapper, please contact us at
 engage @ citusdata.com.
 
 [status]: https://travis-ci.org/citusdata/cstore_fdw
+[mailing-list]: https://groups.google.com/forum/#!forum/cstore-users
 [citus-cstore-docs]: http://citusdata.com/docs/foreign-data#cstore-wrapper
 [coverage]: https://coveralls.io/r/citusdata/cstore_fdw
 [copy-command]: http://www.postgresql.org/docs/current/static/sql-copy.html
