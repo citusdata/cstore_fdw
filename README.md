@@ -288,7 +288,9 @@ Changeset
 
 * (Feature) Added support for ```COPY TO```.
 * (Feature) Added support for ```INSERT INTO cstore_table SELECT ...```.
-* (Improvement) Improved memory usage.
+* (Optimization) Improved memory usage.
+* (Fix) Dropping multiple cstore tables in a single command cleans-up files
+  of all them.
 
 ### Version 1.1
 
