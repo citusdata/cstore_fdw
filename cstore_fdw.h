@@ -4,7 +4,7 @@
  *
  * Type and function declarations for CStore foreign data wrapper.
  *
- * Copyright (c) 2014, Citus Data, Inc.
+ * Copyright (c) 2015, Citus Data, Inc.
  *
  * $Id$
  *
@@ -19,6 +19,7 @@
 #include "catalog/pg_foreign_server.h"
 #include "catalog/pg_foreign_table.h"
 #include "lib/stringinfo.h"
+#include "utils/rel.h"
 
 
 /* Defines for valid option names */
@@ -46,7 +47,7 @@
 /* CStore file signature */
 #define CSTORE_MAGIC_NUMBER "citus_cstore"
 #define CSTORE_VERSION_MAJOR 1
-#define CSTORE_VERSION_MINOR 1
+#define CSTORE_VERSION_MINOR 2
 
 /* miscellaneous defines */
 #define CSTORE_FDW_NAME "cstore_fdw"
@@ -173,6 +174,8 @@ typedef struct StripeSkipList
 /*
  * ColumnBlockData represents a block of data in a column. valueArray stores
  * the values of data, and existsArray stores whether a value is present.
+ * valueBuffer is used to store (uncompressed) serialized values
+ * referenced by Datum's in valueArray. It is only used for by-reference Datum's.
  * There is a one-to-one correspondence between valueArray and existsArray.
  */
 typedef struct ColumnBlockData
@@ -180,28 +183,47 @@ typedef struct ColumnBlockData
 	bool *existsArray;
 	Datum *valueArray;
 
+	/* valueBuffer keeps actual data for type-by-reference datums from valueArray. */
+	StringInfo valueBuffer;
+
 } ColumnBlockData;
 
 
 /*
- * ColumnData represents data for a column in a row stripe. Each column is made
- * of multiple column blocks.
+ * ColumnBlockBuffers represents a block of serialized data in a column.
+ * valueBuffer stores the serialized values of data, and existsBuffer stores
+ * serialized value of presence information. valueCompressionType contains
+ * compression type if valueBuffer is compressed. Finally rowCount has
+ * the number of rows in this block.
  */
-typedef struct ColumnData
+typedef struct ColumnBlockBuffers
 {
-	ColumnBlockData **blockDataArray;
+	StringInfo existsBuffer;
+	StringInfo valueBuffer;
+	CompressionType valueCompressionType;
 
-} ColumnData;
+} ColumnBlockBuffers;
 
 
-/* StripeData represents data for a row stripe in a cstore file. */
-typedef struct StripeData
+/*
+ * ColumnBuffers represents data buffers for a column in a row stripe. Each
+ * column is made of multiple column blocks.
+ */
+typedef struct ColumnBuffers
+{
+	ColumnBlockBuffers **blockBuffersArray;
+
+} ColumnBuffers;
+
+
+/* StripeBuffers represents data for a row stripe in a cstore file. */
+typedef struct StripeBuffers
 {
 	uint32 columnCount;
 	uint32 rowCount;
-	ColumnData **columnDataArray;
+	ColumnBuffers **columnBuffersArray;
 
-} StripeData;
+} StripeBuffers;
 
 
 /*
@@ -235,12 +257,13 @@ typedef struct TableReadState
 
 	List *whereClauseList;
 	MemoryContext stripeReadContext;
-	StripeData *stripeData;
+	StripeBuffers *stripeBuffers;
 	uint32 readStripeCount;
 	uint64 stripeReadRowCount;
+	ColumnBlockData **blockDataArray;
+	int32 deserializedBlockIndex;
 
 } TableReadState;
-
 
 
 /* TableWriteState represents state of a cstore file write operation. */
@@ -253,12 +276,20 @@ typedef struct TableWriteState
 	TupleDesc tupleDescriptor;
 	FmgrInfo **comparisonFunctionArray;
 	uint64 currentFileOffset;
-
+	Relation relation;
 
 	MemoryContext stripeWriteContext;
-	StripeData *stripeData;
+	StripeBuffers *stripeBuffers;
 	StripeSkipList *stripeSkipList;
 	uint32 stripeMaxRowCount;
+	ColumnBlockData **blockDataArray;
+	/*
+	 * compressionBuffer buffer is used as temporary storage during
+	 * data value compression operation. It is kept here to minimize
+	 * memory allocations. It lives in stripeWriteContext and gets
+	 * deallocated when memory context is reset.
+	 */
+	StringInfo compressionBuffer;
 
 } TableWriteState;
 
@@ -299,6 +330,10 @@ extern void CStoreEndRead(TableReadState *state);
 /* Function declarations for common functions */
 extern FmgrInfo * GetFunctionInfoOrNull(Oid typeId, Oid accessMethodId,
 										int16 procedureId);
+extern ColumnBlockData ** CreateEmptyBlockDataArray(uint32 columnCount, bool *columnMask,
+													uint32 blockRowCount);
+extern void FreeColumnBlockDataArray(ColumnBlockData **blockDataArray,
+									 uint32 columnCount);
 
 
 #endif   /* CSTORE_FDW_H */ 

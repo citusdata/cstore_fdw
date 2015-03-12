@@ -7,7 +7,13 @@ cstore_fdw
 This extension implements a columnar store for PostgreSQL. Columnar stores
 provide notable benefits for analytic use-cases where data is loaded in batches.
 
-The extension uses the Optimized Row Columnar (ORC) format for its data layout.
+Join the [Mailing List][mailing-list] to stay on top of the latest developments.
+
+
+Introduction
+------------
+
+This extension uses the Optimized Row Columnar (ORC) format for its data layout.
 ORC improves upon the RCFile format developed at Facebook, and brings the
 following benefits:
 
@@ -93,22 +99,29 @@ The following parameters can be set on a cstore foreign table object.
   in fewer reads from disk. However, higher values also reduce the probability of
   skipping over unrelated row blocks.
 
-You can use PostgreSQL's ```COPY``` command to load or append data into the table.
-You can use PostgreSQL's ```ANALYZE table_name``` command to collect statistics
+
+To load or append data into a cstore table, you have two options:
+
+* You can use the [```COPY``` command][copy-command] to load or append data from
+  a file, a program, or STDIN.
+* You can use the ```INSERT INTO cstore_table SELECT ...``` syntax to load or
+  append data from another table.
+
+You can use the [```ANALYZE``` command][analyze-command] to collect statistics
 about the table. These statistics help the query planner to help determine the
 most efficient execution plan for each query.
 
-**Note.** We currently don't support updating table using INSERT, DELETE, and
-UPDATE commands.
+**Note.** We currently don't support updating table using DELETE, and UPDATE
+commands. We also don't support single row inserts.
 
 
-Updating from version 1.0 to 1.1
----------------------------------
+Updating from version 1.0 or 1.1 to 1.2
+---------------------------------------
 
-To update your existing cstore_fdw installation from version 1.0 to 1.1, you can take
-the following steps:
+To update your existing cstore_fdw installation from version 1.0 or 1.1 to 1.2,
+you can take the following steps:
 
-* Download and install cstore_fdw version 1.1 using instructions from the "Building"
+* Download and install cstore_fdw version 1.2 using instructions from the "Building"
   section,
 * Restart the PostgreSQL server,
 * Run the ```ALTER EXTENSION cstore_fdw UPDATE;``` command.
@@ -271,6 +284,14 @@ the installation:
 Changeset
 ---------
 
+### Version 1.2
+
+* (Feature) Added support for ```COPY TO```.
+* (Feature) Added support for ```INSERT INTO cstore_table SELECT ...```.
+* (Optimization) Improved memory usage.
+* (Fix) Dropping multiple cstore tables in a single command cleans-up files
+  of all them.
+
 ### Version 1.1
 
 * (Feature) Make filename option optional, and use a default directory inside
@@ -286,7 +307,7 @@ Changeset
 Copyright
 ---------
 
-Copyright (c) 2014 Citus Data, Inc.
+Copyright (c) 2015 Citus Data, Inc.
 
 This module is free software; you can redistribute it and/or modify it under the
 Apache v2.0 License.
@@ -295,6 +316,8 @@ For all types of questions and comments about the wrapper, please contact us at
 engage @ citusdata.com.
 
 [status]: https://travis-ci.org/citusdata/cstore_fdw
+[mailing-list]: https://groups.google.com/forum/#!forum/cstore-users
 [citus-cstore-docs]: http://citusdata.com/docs/foreign-data#cstore-wrapper
 [coverage]: https://coveralls.io/r/citusdata/cstore_fdw
-
+[copy-command]: http://www.postgresql.org/docs/current/static/sql-copy.html
+[analyze-command]: http://www.postgresql.org/docs/current/static/sql-analyze.html

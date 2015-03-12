@@ -7,7 +7,6 @@ Requested Features
 * Improve query cost estimation
 * Improve write performance
 * Improve read performance
-* Improve memory usage
 * Add checksum logic
 * Add new compression methods
 * Enable ALTER FOREIGN TABLE ADD COLUMN
@@ -38,15 +37,8 @@ Known Issues
   by default.
 * We don't yet incorporate the compression method's impact on disk I/O into cost
   estimates.
-* Dropping multiple tables in a single DROP FOREIGN TABLE statement doesn't delete
-  files of all tables.
 * CitusDB integration errors:
-  * If CitusDB applies a broadcast table join, and if the columnar table is one of
-    the smaller tables, we produce wrong result.
-  * master\_apply\_delete\_command doesn't work for cstore tables.
   * Concurrent staging cstore\_fdw tables doesn't work.
-  * \\stage command doesn't work for cstore\_fdw 1.1 if the filename option is not
-    specified.
 
 [roadmap]: https://github.com/citusdata/cstore_fdw/wiki/Roadmap
 
