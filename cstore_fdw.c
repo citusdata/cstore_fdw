@@ -385,13 +385,6 @@ CopyIntoCStoreTable(const CopyStmt *copyStatement, const char *queryString)
 	CStoreFdwOptions *cstoreFdwOptions = NULL;
 	MemoryContext tupleContext = NULL;
 
-	List *columnNameList = copyStatement->attlist;
-	if (columnNameList != NULL)
-	{
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						errmsg("copy column list is not supported")));
-	}
-
 	/* Only superuser can copy from or to local file */
 	CheckSuperuserPrivilegesForCopy(copyStatement);
 
@@ -427,7 +420,8 @@ CopyIntoCStoreTable(const CopyStmt *copyStatement, const char *queryString)
 
 	/* init state to read from COPY data source */
 	copyState = BeginCopyFrom(relation, copyStatement->filename,
-							  copyStatement->is_program, NIL,
+							  copyStatement->is_program,
+							  copyStatement->attlist,
 							  copyStatement->options);
 
 	/* init state to write to the cstore file */
