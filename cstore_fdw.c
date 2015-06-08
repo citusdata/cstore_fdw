@@ -86,7 +86,10 @@ static void CStoreGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel,
 static ForeignScan * CStoreGetForeignPlan(PlannerInfo *root, RelOptInfo *baserel,
 										  Oid foreignTableId, ForeignPath *bestPath,
 										  List *targetList, List *scanClauses);
-static double TupleCountEstimate(RelOptInfo *baserel, const char *filename);
+static double TupleCountEstimate(RelOptInfo *baserel, const char *filename,
+								 Oid foreignTableId);
+static double TupleCountEstimateFromFooter(const char *filename, Oid foreignTableId);
+
 static BlockNumber PageCount(const char *filename);
 static List * ColumnList(RelOptInfo *baserel);
 static void CStoreExplainForeignScan(ForeignScanState *scanState,
@@ -243,7 +246,7 @@ CStoreProcessUtility(Node *parseTree, const char *queryString,
 		List *droppedTables = DroppedCStoreFilenameList((DropStmt*) parseTree);
 
 		CallPreviousProcessUtility(parseTree, queryString, context,
-				                   paramListInfo, destReceiver, completionTag);
+								   paramListInfo, destReceiver, completionTag);
 
 		foreach(fileListCell, droppedTables)
 		{
@@ -1077,7 +1080,9 @@ static void
 CStoreGetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId)
 {
 	CStoreFdwOptions *cstoreFdwOptions = CStoreGetOptions(foreignTableId);
-	double tupleCountEstimate = TupleCountEstimate(baserel, cstoreFdwOptions->filename);
+	double tupleCountEstimate = TupleCountEstimate(baserel,
+												   cstoreFdwOptions->filename,
+												   foreignTableId);
 	double rowSelectivity = clauselist_selectivity(root, baserel->baserestrictinfo,
 												   0, JOIN_INNER, NULL);
 
@@ -1124,7 +1129,9 @@ CStoreGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId
 	double queryPageCount = relationPageCount * queryColumnRatio;
 	double totalDiskAccessCost = seq_page_cost * queryPageCount;
 
-	double tupleCountEstimate = TupleCountEstimate(baserel, cstoreFdwOptions->filename);
+	double tupleCountEstimate = TupleCountEstimate(baserel,
+												   cstoreFdwOptions->filename,
+												   foreignTableId);
 
 	/*
 	 * We estimate costs almost the same way as cost_seqscan(), thus assuming
@@ -1188,13 +1195,12 @@ CStoreGetForeignPlan(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId,
 	return foreignScan;
 }
 
-
 /*
  * TupleCountEstimate estimates the number of base relation tuples in the given
  * file.
  */
 static double
-TupleCountEstimate(RelOptInfo *baserel, const char *filename)
+TupleCountEstimate(RelOptInfo *baserel, const char *filename, Oid foreignTableId)
 {
 	double tupleCountEstimate = 0.0;
 
@@ -1218,24 +1224,38 @@ TupleCountEstimate(RelOptInfo *baserel, const char *filename)
 		 * planner's idea of relation width, which may be inaccurate. For better
 		 * estimates, users need to run ANALYZE.
 		 */
-		struct stat statBuffer;
-		int tupleWidth = 0;
 
-		int statResult = stat(filename, &statBuffer);
-		if (statResult < 0)
+		double estimate = TupleCountEstimateFromFooter(filename, foreignTableId);
+
+		if (estimate >= LARGE_TABLE_THRESHOLD)
 		{
-			/* file may not be there at plan time, so use a default estimate */
-			statBuffer.st_size = 10 * BLCKSZ;
+			return estimate;
 		}
-
-		tupleWidth = MAXALIGN(baserel->width) + MAXALIGN(sizeof(HeapTupleHeaderData));
-		tupleCountEstimate = (double) statBuffer.st_size / (double) tupleWidth;
-		tupleCountEstimate = clamp_row_est(tupleCountEstimate);
+		else
+		{
+			return TupleCountEstimateFromSkiplists(filename, foreignTableId);
+		}
 	}
 
 	return tupleCountEstimate;
 }
 
+static double
+TupleCountEstimateFromFooter(const char *filename, Oid foreignTableId)
+{
+	TableFooter *tableFooter = NULL;
+	CStoreFdwOptions *cstoreFdwOptions = CStoreGetOptions(foreignTableId);
+	StringInfo tableFooterFilename = makeStringInfo();
+	int stripeCount = 0;
+
+	appendStringInfo(tableFooterFilename, "%s%s", filename, CSTORE_FOOTER_FILE_SUFFIX);
+
+	tableFooter = CStoreReadFooter(tableFooterFilename);
+
+	stripeCount = list_length(tableFooter->stripeMetadataList);
+
+	return cstoreFdwOptions->stripeRowCount * stripeCount;
+}
 
 /* PageCount calculates and returns the number of pages in a file. */
 static BlockNumber

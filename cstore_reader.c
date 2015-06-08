@@ -32,7 +32,7 @@
 #include "utils/lsyscache.h"
 #include "utils/pg_lzcompress.h"
 #include "utils/rel.h"
-
+#include "cstore.pb-c.h"
 
 /* static function declarations */
 static StripeBuffers * LoadFilteredStripeBuffers(FILE *tableFile,
@@ -81,7 +81,7 @@ static StringInfo ReadFromFile(FILE *file, uint64 offset, uint32 size);
 static StringInfo DecompressBuffer(StringInfo buffer, CompressionType compressionType);
 static void ResetUncompressedBlockData(ColumnBlockData **blockDataArray,
 									   uint32 columnCount);
-
+static double TupleCountEstimateForStripe(FILE *tableFile, StripeMetadata *stripeMetadata);
 
 /*
  * CStoreBeginRead initializes a cstore read operation. This function returns a
@@ -389,6 +389,78 @@ FreeColumnBlockDataArray(ColumnBlockData **blockDataArray, uint32 columnCount)
 	pfree(blockDataArray);
 }
 
+/* TupleCountEstimateFromSkiplists returns the exact row count of a table using skiplists */
+double
+TupleCountEstimateFromSkiplists(const char *filename, Oid foreignTableId)
+{
+	TableFooter *tableFooter = NULL;
+	FILE *tableFile;
+	ListCell *stripeMetadataCell = NULL;
+	double totalRowCount = 0;
+
+	StringInfo tableFooterFilename = makeStringInfo();
+
+	appendStringInfo(tableFooterFilename, "%s%s", filename, CSTORE_FOOTER_FILE_SUFFIX);
+
+	tableFooter = CStoreReadFooter(tableFooterFilename);
+
+	pfree(tableFooterFilename->data);
+	pfree(tableFooterFilename);
+
+	tableFile = AllocateFile(filename, PG_BINARY_R);
+	if (tableFile == NULL)
+	{
+		ereport(ERROR, (errcode_for_file_access(),
+						errmsg("could not open file \"%s\" for reading: %m",
+						       filename)));
+	}
+
+	foreach(stripeMetadataCell, tableFooter->stripeMetadataList)
+	{
+		StripeMetadata *stripeMetadata = (StripeMetadata *) lfirst(stripeMetadataCell);
+		totalRowCount += TupleCountEstimateForStripe(tableFile, stripeMetadata);
+	}
+
+	FreeFile(tableFile);
+
+	return totalRowCount;
+}
+
+static double
+TupleCountEstimateForStripe(FILE *tableFile, StripeMetadata *stripeMetadata)
+{
+	double result = 0;
+	StripeFooter *stripeFooter = NULL;
+	StringInfo footerBuffer = NULL;
+	StringInfo firstColumnSkipListBuffer = NULL;
+	uint64 footerOffset = 0;
+	Protobuf__ColumnBlockSkipList *protobufBlockSkipList = NULL;
+	int blockIndex;
+
+	footerOffset += stripeMetadata->fileOffset;
+	footerOffset += stripeMetadata->skipListLength;
+	footerOffset += stripeMetadata->dataLength;
+
+	footerBuffer = ReadFromFile(tableFile, footerOffset, stripeMetadata->footerLength);
+	stripeFooter = DeserializeStripeFooter(footerBuffer);
+
+	firstColumnSkipListBuffer = ReadFromFile(tableFile, stripeMetadata->fileOffset,
+	                                         stripeFooter->skipListSizeArray[0]);
+
+	protobufBlockSkipList = protobuf__column_block_skip_list__unpack(NULL,
+																	 firstColumnSkipListBuffer->len,
+																	 (uint8 *) firstColumnSkipListBuffer->data);
+
+	for (blockIndex = 0; blockIndex < protobufBlockSkipList->n_blockskipnodearray; blockIndex++)
+	{
+		Protobuf__ColumnBlockSkipNode *protobufBlockSkipNode = protobufBlockSkipList->blockskipnodearray[blockIndex];
+		result += protobufBlockSkipNode->rowcount;
+	}
+
+	protobuf__column_block_skip_list__free_unpacked(protobufBlockSkipList, NULL);
+
+	return result;
+}
 
 /*
  * LoadFilteredStripeBuffers reads serialized stripe data from the given file.
@@ -1211,3 +1283,4 @@ ResetUncompressedBlockData(ColumnBlockData **blockDataArray, uint32 columnCount)
 		}
 	}
 }
+
