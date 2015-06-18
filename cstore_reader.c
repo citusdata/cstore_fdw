@@ -32,7 +32,7 @@
 #include "utils/lsyscache.h"
 #include "utils/pg_lzcompress.h"
 #include "utils/rel.h"
-#include "cstore.pb-c.h"
+
 
 /* static function declarations */
 static StripeBuffers * LoadFilteredStripeBuffers(FILE *tableFile,
@@ -81,7 +81,8 @@ static StringInfo ReadFromFile(FILE *file, uint64 offset, uint32 size);
 static StringInfo DecompressBuffer(StringInfo buffer, CompressionType compressionType);
 static void ResetUncompressedBlockData(ColumnBlockData **blockDataArray,
 									   uint32 columnCount);
-static double TupleCountEstimateForStripe(FILE *tableFile, StripeMetadata *stripeMetadata);
+static uint64 TupleCountEstimateForStripe(FILE *tableFile, StripeMetadata *stripeMetadata);
+
 
 /*
  * CStoreBeginRead initializes a cstore read operation. This function returns a
@@ -389,14 +390,15 @@ FreeColumnBlockDataArray(ColumnBlockData **blockDataArray, uint32 columnCount)
 	pfree(blockDataArray);
 }
 
+
 /* TupleCountEstimateFromSkiplists returns the exact row count of a table using skiplists */
-double
+uint64
 TupleCountEstimateFromSkiplists(const char *filename, Oid foreignTableId)
 {
 	TableFooter *tableFooter = NULL;
 	FILE *tableFile;
 	ListCell *stripeMetadataCell = NULL;
-	double totalRowCount = 0;
+	uint64 totalRowCount = 0;
 
 	StringInfo tableFooterFilename = makeStringInfo();
 
@@ -426,16 +428,19 @@ TupleCountEstimateFromSkiplists(const char *filename, Oid foreignTableId)
 	return totalRowCount;
 }
 
-static double
+
+/*
+ * TupleCountEstimateForStripe read serialized stripe footer, the first column's
+ * skip list, and returns number of rows for given stripe.
+ */
+static uint64
 TupleCountEstimateForStripe(FILE *tableFile, StripeMetadata *stripeMetadata)
 {
-	double result = 0;
+	uint64 rowCount = 0;
 	StripeFooter *stripeFooter = NULL;
 	StringInfo footerBuffer = NULL;
 	StringInfo firstColumnSkipListBuffer = NULL;
 	uint64 footerOffset = 0;
-	Protobuf__ColumnBlockSkipList *protobufBlockSkipList = NULL;
-	int blockIndex;
 
 	footerOffset += stripeMetadata->fileOffset;
 	footerOffset += stripeMetadata->skipListLength;
@@ -446,21 +451,11 @@ TupleCountEstimateForStripe(FILE *tableFile, StripeMetadata *stripeMetadata)
 
 	firstColumnSkipListBuffer = ReadFromFile(tableFile, stripeMetadata->fileOffset,
 	                                         stripeFooter->skipListSizeArray[0]);
+	rowCount =  DeserializeRowCount(firstColumnSkipListBuffer);
 
-	protobufBlockSkipList = protobuf__column_block_skip_list__unpack(NULL,
-																	 firstColumnSkipListBuffer->len,
-																	 (uint8 *) firstColumnSkipListBuffer->data);
-
-	for (blockIndex = 0; blockIndex < protobufBlockSkipList->n_blockskipnodearray; blockIndex++)
-	{
-		Protobuf__ColumnBlockSkipNode *protobufBlockSkipNode = protobufBlockSkipList->blockskipnodearray[blockIndex];
-		result += protobufBlockSkipNode->rowcount;
-	}
-
-	protobuf__column_block_skip_list__free_unpacked(protobufBlockSkipList, NULL);
-
-	return result;
+	return rowCount;
 }
+
 
 /*
  * LoadFilteredStripeBuffers reads serialized stripe data from the given file.

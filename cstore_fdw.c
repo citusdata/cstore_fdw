@@ -88,7 +88,7 @@ static ForeignScan * CStoreGetForeignPlan(PlannerInfo *root, RelOptInfo *baserel
 										  List *targetList, List *scanClauses);
 static double TupleCountEstimate(RelOptInfo *baserel, const char *filename,
 								 Oid foreignTableId);
-static double TupleCountEstimateFromFooter(const char *filename, Oid foreignTableId);
+static uint64 TupleCountEstimateFromFooter(const char *filename, Oid foreignTableId);
 
 static BlockNumber PageCount(const char *filename);
 static List * ColumnList(RelOptInfo *baserel);
@@ -1233,14 +1233,18 @@ TupleCountEstimate(RelOptInfo *baserel, const char *filename, Oid foreignTableId
 		}
 		else
 		{
-			return TupleCountEstimateFromSkiplists(filename, foreignTableId);
+			return (double) TupleCountEstimateFromSkiplists(filename, foreignTableId);
 		}
 	}
 
 	return tupleCountEstimate;
 }
 
-static double
+/*
+ * TupleCountEstimateFromFooter estimates number of rows in the table
+ * by multiplying number of stripes with stripeRowCount.
+ */
+static uint64
 TupleCountEstimateFromFooter(const char *filename, Oid foreignTableId)
 {
 	TableFooter *tableFooter = NULL;

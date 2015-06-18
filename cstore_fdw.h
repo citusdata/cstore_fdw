@@ -335,5 +335,5 @@ extern ColumnBlockData ** CreateEmptyBlockDataArray(uint32 columnCount, bool *co
 extern void FreeColumnBlockDataArray(ColumnBlockData **blockDataArray,
 									 uint32 columnCount);
 
-extern double TupleCountEstimateFromSkiplists(const char *filename, Oid foreignTableId);
+extern uint64 TupleCountEstimateFromSkiplists(const char *filename, Oid foreignTableId);
 #endif   /* CSTORE_FDW_H */ 
