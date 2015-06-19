@@ -86,10 +86,7 @@ static void CStoreGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel,
 static ForeignScan * CStoreGetForeignPlan(PlannerInfo *root, RelOptInfo *baserel,
 										  Oid foreignTableId, ForeignPath *bestPath,
 										  List *targetList, List *scanClauses);
-static double TupleCountEstimate(RelOptInfo *baserel, const char *filename,
-								 Oid foreignTableId);
-static uint64 TupleCountEstimateFromFooter(const char *filename, Oid foreignTableId);
-
+static double TupleCountEstimate(RelOptInfo *baserel, const char *filename);
 static BlockNumber PageCount(const char *filename);
 static List * ColumnList(RelOptInfo *baserel);
 static void CStoreExplainForeignScan(ForeignScanState *scanState,
@@ -1080,9 +1077,7 @@ static void
 CStoreGetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId)
 {
 	CStoreFdwOptions *cstoreFdwOptions = CStoreGetOptions(foreignTableId);
-	double tupleCountEstimate = TupleCountEstimate(baserel,
-												   cstoreFdwOptions->filename,
-												   foreignTableId);
+	double tupleCountEstimate = TupleCountEstimate(baserel, cstoreFdwOptions->filename);
 	double rowSelectivity = clauselist_selectivity(root, baserel->baserestrictinfo,
 												   0, JOIN_INNER, NULL);
 
@@ -1129,9 +1124,7 @@ CStoreGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId
 	double queryPageCount = relationPageCount * queryColumnRatio;
 	double totalDiskAccessCost = seq_page_cost * queryPageCount;
 
-	double tupleCountEstimate = TupleCountEstimate(baserel,
-												   cstoreFdwOptions->filename,
-												   foreignTableId);
+	double tupleCountEstimate = TupleCountEstimate(baserel, cstoreFdwOptions->filename);
 
 	/*
 	 * We estimate costs almost the same way as cost_seqscan(), thus assuming
@@ -1200,7 +1193,7 @@ CStoreGetForeignPlan(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId,
  * file.
  */
 static double
-TupleCountEstimate(RelOptInfo *baserel, const char *filename, Oid foreignTableId)
+TupleCountEstimate(RelOptInfo *baserel, const char *filename)
 {
 	double tupleCountEstimate = 0.0;
 
@@ -1219,47 +1212,12 @@ TupleCountEstimate(RelOptInfo *baserel, const char *filename, Oid foreignTableId
 	}
 	else
 	{
-		/*
-		 * Otherwise we have to fake it. We back into this estimate using the
-		 * planner's idea of relation width, which may be inaccurate. For better
-		 * estimates, users need to run ANALYZE.
-		 */
-
-		double estimate = TupleCountEstimateFromFooter(filename, foreignTableId);
-
-		if (estimate >= LARGE_TABLE_THRESHOLD)
-		{
-			return estimate;
-		}
-		else
-		{
-			return (double) TupleCountEstimateFromSkiplists(filename, foreignTableId);
-		}
+		tupleCountEstimate = (double) CStoreTableRowCount(filename);
 	}
 
 	return tupleCountEstimate;
 }
 
-/*
- * TupleCountEstimateFromFooter estimates number of rows in the table
- * by multiplying number of stripes with stripeRowCount.
- */
-static uint64
-TupleCountEstimateFromFooter(const char *filename, Oid foreignTableId)
-{
-	TableFooter *tableFooter = NULL;
-	CStoreFdwOptions *cstoreFdwOptions = CStoreGetOptions(foreignTableId);
-	StringInfo tableFooterFilename = makeStringInfo();
-	int stripeCount = 0;
-
-	appendStringInfo(tableFooterFilename, "%s%s", filename, CSTORE_FOOTER_FILE_SUFFIX);
-
-	tableFooter = CStoreReadFooter(tableFooterFilename);
-
-	stripeCount = list_length(tableFooter->stripeMetadataList);
-
-	return cstoreFdwOptions->stripeRowCount * stripeCount;
-}
 
 /* PageCount calculates and returns the number of pages in a file. */
 static BlockNumber

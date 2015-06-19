@@ -81,7 +81,7 @@ static StringInfo ReadFromFile(FILE *file, uint64 offset, uint32 size);
 static StringInfo DecompressBuffer(StringInfo buffer, CompressionType compressionType);
 static void ResetUncompressedBlockData(ColumnBlockData **blockDataArray,
 									   uint32 columnCount);
-static uint64 TupleCountEstimateForStripe(FILE *tableFile, StripeMetadata *stripeMetadata);
+static uint64 StripeRowCount(FILE *tableFile, StripeMetadata *stripeMetadata);
 
 
 /*
@@ -391,9 +391,9 @@ FreeColumnBlockDataArray(ColumnBlockData **blockDataArray, uint32 columnCount)
 }
 
 
-/* TupleCountEstimateFromSkiplists returns the exact row count of a table using skiplists */
+/* CStoreTableRowCount returns the exact row count of a table using skiplists */
 uint64
-TupleCountEstimateFromSkiplists(const char *filename, Oid foreignTableId)
+CStoreTableRowCount(const char *filename)
 {
 	TableFooter *tableFooter = NULL;
 	FILE *tableFile;
@@ -420,7 +420,7 @@ TupleCountEstimateFromSkiplists(const char *filename, Oid foreignTableId)
 	foreach(stripeMetadataCell, tableFooter->stripeMetadataList)
 	{
 		StripeMetadata *stripeMetadata = (StripeMetadata *) lfirst(stripeMetadataCell);
-		totalRowCount += TupleCountEstimateForStripe(tableFile, stripeMetadata);
+		totalRowCount += StripeRowCount(tableFile, stripeMetadata);
 	}
 
 	FreeFile(tableFile);
@@ -430,11 +430,11 @@ TupleCountEstimateFromSkiplists(const char *filename, Oid foreignTableId)
 
 
 /*
- * TupleCountEstimateForStripe read serialized stripe footer, the first column's
+ * StripeRowCount reads serialized stripe footer, the first column's
  * skip list, and returns number of rows for given stripe.
  */
 static uint64
-TupleCountEstimateForStripe(FILE *tableFile, StripeMetadata *stripeMetadata)
+StripeRowCount(FILE *tableFile, StripeMetadata *stripeMetadata)
 {
 	uint64 rowCount = 0;
 	StripeFooter *stripeFooter = NULL;
