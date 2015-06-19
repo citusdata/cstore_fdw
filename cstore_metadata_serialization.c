@@ -418,7 +418,7 @@ DeserializeRowCount(StringInfo buffer)
 	uint32 rowCount = 0;
 	Protobuf__ColumnBlockSkipList *protobufBlockSkipList = NULL;
 	uint32 blockIndex = 0;
-
+	uint32 blockCount = 0;
 
 	protobufBlockSkipList =
 		protobuf__column_block_skip_list__unpack(NULL, buffer->len,
@@ -429,9 +429,11 @@ DeserializeRowCount(StringInfo buffer)
 						errdetail("invalid skip list buffer")));
 	}
 
-	for (blockIndex = 0; blockIndex < protobufBlockSkipList->n_blockskipnodearray; blockIndex++)
+	blockCount = (uint32) protobufBlockSkipList->n_blockskipnodearray;
+	for (blockIndex = 0; blockIndex < blockCount; blockIndex++)
 	{
-		Protobuf__ColumnBlockSkipNode *protobufBlockSkipNode = protobufBlockSkipList->blockskipnodearray[blockIndex];
+		Protobuf__ColumnBlockSkipNode *protobufBlockSkipNode =
+				protobufBlockSkipList->blockskipnodearray[blockIndex];
 		rowCount += protobufBlockSkipNode->rowcount;
 	}
 

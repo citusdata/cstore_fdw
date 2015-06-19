@@ -1188,6 +1188,7 @@ CStoreGetForeignPlan(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId,
 	return foreignScan;
 }
 
+
 /*
  * TupleCountEstimate estimates the number of base relation tuples in the given
  * file.

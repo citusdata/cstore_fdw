@@ -57,6 +57,7 @@
 #define CSTORE_POSTSCRIPT_SIZE_LENGTH 1
 #define CSTORE_POSTSCRIPT_SIZE_MAX 256
 
+
 /*
  * CStoreValidOption keeps an option name and a context. When an option is passed
  * into cstore_fdw objects (server and foreign table), we compare this option's
@@ -333,6 +334,7 @@ extern ColumnBlockData ** CreateEmptyBlockDataArray(uint32 columnCount, bool *co
 													uint32 blockRowCount);
 extern void FreeColumnBlockDataArray(ColumnBlockData **blockDataArray,
 									 uint32 columnCount);
-
 extern uint64 CStoreTableRowCount(const char *filename);
+
+
 #endif   /* CSTORE_FDW_H */ 

@@ -413,8 +413,7 @@ CStoreTableRowCount(const char *filename)
 	if (tableFile == NULL)
 	{
 		ereport(ERROR, (errcode_for_file_access(),
-						errmsg("could not open file \"%s\" for reading: %m",
-						       filename)));
+						errmsg("could not open file \"%s\" for reading: %m", filename)));
 	}
 
 	foreach(stripeMetadataCell, tableFooter->stripeMetadataList)
@@ -1278,4 +1277,3 @@ ResetUncompressedBlockData(ColumnBlockData **blockDataArray, uint32 columnCount)
 		}
 	}
 }
-
