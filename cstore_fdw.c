@@ -243,7 +243,7 @@ CStoreProcessUtility(Node *parseTree, const char *queryString,
 		List *droppedTables = DroppedCStoreFilenameList((DropStmt*) parseTree);
 
 		CallPreviousProcessUtility(parseTree, queryString, context,
-				                   paramListInfo, destReceiver, completionTag);
+								   paramListInfo, destReceiver, completionTag);
 
 		foreach(fileListCell, droppedTables)
 		{
@@ -1213,24 +1213,7 @@ TupleCountEstimate(RelOptInfo *baserel, const char *filename)
 	}
 	else
 	{
-		/*
-		 * Otherwise we have to fake it. We back into this estimate using the
-		 * planner's idea of relation width, which may be inaccurate. For better
-		 * estimates, users need to run ANALYZE.
-		 */
-		struct stat statBuffer;
-		int tupleWidth = 0;
-
-		int statResult = stat(filename, &statBuffer);
-		if (statResult < 0)
-		{
-			/* file may not be there at plan time, so use a default estimate */
-			statBuffer.st_size = 10 * BLCKSZ;
-		}
-
-		tupleWidth = MAXALIGN(baserel->width) + MAXALIGN(sizeof(HeapTupleHeaderData));
-		tupleCountEstimate = (double) statBuffer.st_size / (double) tupleWidth;
-		tupleCountEstimate = clamp_row_est(tupleCountEstimate);
+		tupleCountEstimate = (double) CStoreTableRowCount(filename);
 	}
 
 	return tupleCountEstimate;
