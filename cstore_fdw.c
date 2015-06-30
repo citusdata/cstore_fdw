@@ -88,7 +88,7 @@ static ForeignScan * CStoreGetForeignPlan(PlannerInfo *root, RelOptInfo *baserel
 										  List *targetList, List *scanClauses);
 static double TupleCountEstimate(RelOptInfo *baserel, const char *filename);
 static BlockNumber PageCount(const char *filename);
-static List * ColumnList(RelOptInfo *baserel);
+static List * ColumnList(RelOptInfo *baserel, Oid foreignTableId);
 static void CStoreExplainForeignScan(ForeignScanState *scanState,
 									 ExplainState *explainState);
 static void CStoreBeginForeignScan(ForeignScanState *scanState, int executorFlags);
@@ -1109,7 +1109,7 @@ CStoreGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId
 	 * algorithm and using the correlation statistics to detect which columns
 	 * are in stored in sorted order.
 	 */
-	List *queryColumnList = ColumnList(baserel);
+	List *queryColumnList = ColumnList(baserel, foreignTableId);
 	uint32 queryColumnCount = list_length(queryColumnList);
 	BlockNumber relationPageCount = PageCount(cstoreFdwOptions->filename);
 	uint32 relationColumnCount = RelationGetNumberOfAttributes(relation);
@@ -1171,7 +1171,7 @@ CStoreGetForeignPlan(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId,
 	 * in executor's callback functions, so we get the column list here and put
 	 * it into foreign scan node's private list.
 	 */
-	columnList = ColumnList(baserel);
+	columnList = ColumnList(baserel, foreignTableId);
 	foreignPrivateList = list_make1(columnList);
 
 	/* create the foreign scan node */
@@ -1262,7 +1262,7 @@ PageCount(const char *filename)
  * and returns them in a new list. This function is unchanged from mongo_fdw.
  */
 static List *
-ColumnList(RelOptInfo *baserel)
+ColumnList(RelOptInfo *baserel, Oid foreignTableId)
 {
 	List *columnList = NIL;
 	List *neededColumnList = NIL;
@@ -1271,6 +1271,10 @@ ColumnList(RelOptInfo *baserel)
 	List *targetColumnList = baserel->reltargetlist;
 	List *restrictInfoList = baserel->baserestrictinfo;
 	ListCell *restrictInfoCell = NULL;
+	const AttrNumber wholeRow = 0;
+	Relation relation = heap_open(foreignTableId, AccessShareLock);
+	TupleDesc tupleDescriptor = RelationGetDescr(relation);
+	Form_pg_attribute *attributeFormArray = tupleDescriptor->attrs;
 
 	/* first add the columns used in joins and projections */
 	neededColumnList = list_copy(targetColumnList);
@@ -1305,6 +1309,16 @@ ColumnList(RelOptInfo *baserel)
 				column = neededColumn;
 				break;
 			}
+			else if (neededColumn->varattno == wholeRow)
+			{
+				Form_pg_attribute attributeForm = attributeFormArray[columnIndex - 1];
+				Index tableId = neededColumn->varno;
+
+				column = makeVar(tableId, columnIndex, attributeForm->atttypid,
+								 attributeForm->atttypmod, attributeForm->attcollation,
+								 0);
+				break;
+			}
 		}
 
 		if (column != NULL)
@@ -1312,6 +1326,8 @@ ColumnList(RelOptInfo *baserel)
 			columnList = lappend(columnList, column);
 		}
 	}
+
+	heap_close(relation, AccessShareLock);
 
 	return columnList;
 }
