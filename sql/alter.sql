@@ -18,6 +18,9 @@ SELECT count(*) FROM test_alter_drop_column;
 -- drop a column
 ALTER FOREIGN TABLE test_alter_drop_column DROP COLUMN a;
 
+-- test analyze
+ANALYZE test_alter_drop_column;
+
 -- verify select runs fine
 SELECT * FROM test_alter_drop_column;
 
