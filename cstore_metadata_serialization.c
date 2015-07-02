@@ -409,6 +409,41 @@ DeserializeBlockCount(StringInfo buffer)
 
 
 /*
+ * DeserializeRowCount deserializes the given column skip list buffer and
+ * returns the total number of rows in block skip list.
+ */
+uint32
+DeserializeRowCount(StringInfo buffer)
+{
+	uint32 rowCount = 0;
+	Protobuf__ColumnBlockSkipList *protobufBlockSkipList = NULL;
+	uint32 blockIndex = 0;
+	uint32 blockCount = 0;
+
+	protobufBlockSkipList =
+		protobuf__column_block_skip_list__unpack(NULL, buffer->len,
+												 (uint8 *) buffer->data);
+	if (protobufBlockSkipList == NULL)
+	{
+		ereport(ERROR, (errmsg("could not unpack column store"),
+						errdetail("invalid skip list buffer")));
+	}
+
+	blockCount = (uint32) protobufBlockSkipList->n_blockskipnodearray;
+	for (blockIndex = 0; blockIndex < blockCount; blockIndex++)
+	{
+		Protobuf__ColumnBlockSkipNode *protobufBlockSkipNode =
+				protobufBlockSkipList->blockskipnodearray[blockIndex];
+		rowCount += protobufBlockSkipNode->rowcount;
+	}
+
+	protobuf__column_block_skip_list__free_unpacked(protobufBlockSkipList, NULL);
+
+	return rowCount;
+}
+
+
+/*
  * DeserializeColumnSkipList deserializes the given buffer and returns the result as
  * a ColumnBlockSkipNode array. If the number of unpacked block skip nodes are not
  * equal to the given block count function errors out.

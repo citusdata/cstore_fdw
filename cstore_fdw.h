@@ -334,6 +334,7 @@ extern ColumnBlockData ** CreateEmptyBlockDataArray(uint32 columnCount, bool *co
 													uint32 blockRowCount);
 extern void FreeColumnBlockDataArray(ColumnBlockData **blockDataArray,
 									 uint32 columnCount);
+extern uint64 CStoreTableRowCount(const char *filename);
 
 
 #endif   /* CSTORE_FDW_H */ 

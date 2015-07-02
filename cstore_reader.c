@@ -81,6 +81,7 @@ static StringInfo ReadFromFile(FILE *file, uint64 offset, uint32 size);
 static StringInfo DecompressBuffer(StringInfo buffer, CompressionType compressionType);
 static void ResetUncompressedBlockData(ColumnBlockData **blockDataArray,
 									   uint32 columnCount);
+static uint64 StripeRowCount(FILE *tableFile, StripeMetadata *stripeMetadata);
 
 
 /*
@@ -387,6 +388,71 @@ FreeColumnBlockDataArray(ColumnBlockData **blockDataArray, uint32 columnCount)
 	}
 	
 	pfree(blockDataArray);
+}
+
+
+/* CStoreTableRowCount returns the exact row count of a table using skiplists */
+uint64
+CStoreTableRowCount(const char *filename)
+{
+	TableFooter *tableFooter = NULL;
+	FILE *tableFile;
+	ListCell *stripeMetadataCell = NULL;
+	uint64 totalRowCount = 0;
+
+	StringInfo tableFooterFilename = makeStringInfo();
+
+	appendStringInfo(tableFooterFilename, "%s%s", filename, CSTORE_FOOTER_FILE_SUFFIX);
+
+	tableFooter = CStoreReadFooter(tableFooterFilename);
+
+	pfree(tableFooterFilename->data);
+	pfree(tableFooterFilename);
+
+	tableFile = AllocateFile(filename, PG_BINARY_R);
+	if (tableFile == NULL)
+	{
+		ereport(ERROR, (errcode_for_file_access(),
+						errmsg("could not open file \"%s\" for reading: %m", filename)));
+	}
+
+	foreach(stripeMetadataCell, tableFooter->stripeMetadataList)
+	{
+		StripeMetadata *stripeMetadata = (StripeMetadata *) lfirst(stripeMetadataCell);
+		totalRowCount += StripeRowCount(tableFile, stripeMetadata);
+	}
+
+	FreeFile(tableFile);
+
+	return totalRowCount;
+}
+
+
+/*
+ * StripeRowCount reads serialized stripe footer, the first column's
+ * skip list, and returns number of rows for given stripe.
+ */
+static uint64
+StripeRowCount(FILE *tableFile, StripeMetadata *stripeMetadata)
+{
+	uint64 rowCount = 0;
+	StripeFooter *stripeFooter = NULL;
+	StringInfo footerBuffer = NULL;
+	StringInfo firstColumnSkipListBuffer = NULL;
+	uint64 footerOffset = 0;
+
+	footerOffset += stripeMetadata->fileOffset;
+	footerOffset += stripeMetadata->skipListLength;
+	footerOffset += stripeMetadata->dataLength;
+
+	footerBuffer = ReadFromFile(tableFile, footerOffset, stripeMetadata->footerLength);
+	stripeFooter = DeserializeStripeFooter(footerBuffer);
+
+	firstColumnSkipListBuffer = ReadFromFile(tableFile, stripeMetadata->fileOffset,
+	                                         stripeFooter->skipListSizeArray[0]);
+	rowCount =  DeserializeRowCount(firstColumnSkipListBuffer);
+
+	return rowCount;
 }
 
 
