@@ -75,7 +75,9 @@ static void DeserializeDatumArray(StringInfo datumBuffer, bool *existsArray,
 								  Datum *datumArray);
 static void DeserializeBlockData(StripeBuffers *stripeBuffers, uint64 blockIndex,
 								 Form_pg_attribute *attributeFormArray,
-								 uint32 rowCount, ColumnBlockData **blockDataArray);
+								 uint32 rowCount, ColumnBlockData **blockDataArray,
+								 TupleDesc tupleDescriptor);
+static bool DefaultValueForColumn(TupleConstr *tupleConstraints, int columnIndex, Datum *defaultValue);
 static int64 FileSize(FILE *file);
 static StringInfo ReadFromFile(FILE *file, uint64 offset, uint32 size);
 static StringInfo DecompressBuffer(StringInfo buffer, CompressionType compressionType);
@@ -298,7 +300,8 @@ CStoreReadNextRow(TableReadState *readState, Datum *columnValues, bool *columnNu
 		oldContext = MemoryContextSwitchTo(readState->stripeReadContext);
 
 		DeserializeBlockData(readState->stripeBuffers, blockIndex, attributeFormArray,
-							 blockRowCount, readState->blockDataArray);
+							 blockRowCount, readState->blockDataArray,
+							 readState->tupleDescriptor);
 
 		MemoryContextSwitchTo(oldContext);
 
@@ -490,7 +493,7 @@ LoadFilteredStripeBuffers(FILE *tableFile, StripeMetadata *stripeMetadata,
 	columnBuffersArray = palloc0(columnCount * sizeof(ColumnBuffers *));
 	currentColumnFileOffset = stripeMetadata->fileOffset + stripeMetadata->skipListLength;
 
-	for (columnIndex = 0; columnIndex < columnCount; columnIndex++)
+	for (columnIndex = 0; columnIndex < stripeFooter->columnCount; columnIndex++)
 	{
 		uint64 existsSize = stripeFooter->existsSizeArray[columnIndex];
 		uint64 valueSize = stripeFooter->valueSizeArray[columnIndex];
@@ -627,7 +630,7 @@ LoadStripeFooter(FILE *tableFile, StripeMetadata *stripeMetadata,
 
 	footerBuffer = ReadFromFile(tableFile, footerOffset, stripeMetadata->footerLength);
 	stripeFooter = DeserializeStripeFooter(footerBuffer);
-	if (stripeFooter->columnCount != columnCount)
+	if (stripeFooter->columnCount > columnCount)
 	{
 		ereport(ERROR, (errmsg("stripe footer column count and table column count "
 							   "don't match")));
@@ -649,6 +652,7 @@ LoadStripeSkipList(FILE *tableFile, StripeMetadata *stripeMetadata,
 	uint64 currentColumnSkipListFileOffset = 0;
 	uint32 columnIndex = 0;
 	uint32 stripeBlockCount = 0;
+	uint32 stripeColumnCount = stripeFooter->columnCount;
 
 	/* deserialize block count */
 	firstColumnSkipListBuffer = ReadFromFile(tableFile, stripeMetadata->fileOffset,
@@ -659,7 +663,7 @@ LoadStripeSkipList(FILE *tableFile, StripeMetadata *stripeMetadata,
 	blockSkipNodeArray = palloc0(columnCount * sizeof(ColumnBlockSkipNode *));
 	currentColumnSkipListFileOffset = stripeMetadata->fileOffset;
 
-	for (columnIndex = 0; columnIndex < columnCount; columnIndex++)
+	for (columnIndex = 0; columnIndex < stripeColumnCount; columnIndex++)
 	{
 		uint64 columnSkipListSize = stripeFooter->skipListSizeArray[columnIndex];
 		Form_pg_attribute attributeForm = attributeFormArray[columnIndex];
@@ -673,6 +677,30 @@ LoadStripeSkipList(FILE *tableFile, StripeMetadata *stripeMetadata,
 		blockSkipNodeArray[columnIndex] = columnSkipList;
 
 		currentColumnSkipListFileOffset += columnSkipListSize;
+	}
+
+	/* table contains additional columns added after this stripe is created */
+	for (columnIndex = stripeColumnCount; columnIndex < columnCount; columnIndex++)
+	{
+		ColumnBlockSkipNode *columnSkipList = NULL;
+		uint32 blockIndex = 0;
+
+		/* create empty ColumnBlockSkipNode for missing columns*/
+		columnSkipList = palloc0(stripeBlockCount * sizeof(ColumnBlockSkipNode));
+
+		for (blockIndex = 0; blockIndex < stripeBlockCount; blockIndex++)
+		{
+			columnSkipList->rowCount = 0;
+			columnSkipList->hasMinMax = false;
+			columnSkipList->minimumValue = (Datum)NULL;
+			columnSkipList->maximumValue = (Datum)NULL;
+			columnSkipList->existsBlockOffset = 0;
+			columnSkipList->valueBlockOffset = 0;
+			columnSkipList->existsLength = 0;
+			columnSkipList->valueLength = 0;
+			columnSkipList->valueCompressionType = COMPRESSION_NONE;
+		}
+		blockSkipNodeArray[columnIndex] = columnSkipList;
 	}
 
 	stripeSkipList = palloc0(sizeof(StripeSkipList));
@@ -1101,22 +1129,26 @@ DeserializeDatumArray(StringInfo datumBuffer, bool *existsArray, uint32 datumCou
  * DeserializeBlockData deserializes requested data block for all columns and
  * stores in blockDataArray. It uncompresses serialized data if necessary. The
  * function also deallocates data buffers used for previous block, and compressed
- * data buffers for the current block which will not be needed again.
+ * data buffers for the current block which will not be needed again. If a column
+ * data is not present serialized buffer, than default value (or null) is used
+ * to fill value array.
  */
 static void
 DeserializeBlockData(StripeBuffers *stripeBuffers, uint64 blockIndex,
 					 Form_pg_attribute *attributeFormArray, uint32 rowCount,
-					 ColumnBlockData **blockDataArray)
+					 ColumnBlockData **blockDataArray, TupleDesc tupleDescriptor)
 {
 	int columnIndex = 0;
 	for (columnIndex = 0; columnIndex < stripeBuffers->columnCount; columnIndex++)
 	{
+		ColumnBlockData *blockData = blockDataArray[columnIndex];
+		Form_pg_attribute attributeForm = attributeFormArray[columnIndex];
 		ColumnBuffers *columnBuffers = stripeBuffers->columnBuffersArray[columnIndex];
+		bool columnAdded = (columnBuffers == NULL) && (blockData != NULL);
+
 		if (columnBuffers != NULL)
 		{
 			ColumnBlockBuffers *blockBuffers = columnBuffers->blockBuffersArray[blockIndex];
-			Form_pg_attribute attributeForm = attributeFormArray[columnIndex];
-			ColumnBlockData *blockData = blockDataArray[columnIndex];
 			StringInfo valueBuffer = NULL;
 
 			/* free previous block's data buffers */
@@ -1144,7 +1176,62 @@ DeserializeBlockData(StripeBuffers *stripeBuffers, uint64 blockIndex,
 			/* store current block's data buffer to be freed at next block read */
 			blockData->valueBuffer = valueBuffer;
 		}
+		else if (columnAdded)
+		{
+			/* populate exists and value buffers for missing column */
+			int rowIndex = 0;
+			bool useDefaultValue = attributeForm->atthasdef;
+			Datum defaultValue = (Datum) NULL;
+
+			if (useDefaultValue)
+			{
+				useDefaultValue = DefaultValueForColumn(tupleDescriptor->constr,
+													 columnIndex, &defaultValue);
+			}
+
+			for (rowIndex = 0; rowIndex < rowCount; rowIndex++)
+			{
+				blockData->existsArray[rowIndex] = useDefaultValue;
+				/* it is safe to assign datum value since this array content
+				 * is never deallocated.
+				 */
+				blockData->valueArray[rowIndex] = defaultValue;
+			}
+		}
 	}
+}
+
+
+/*
+ * DefaultValueForColumn returns default value for given column.
+ * Only const values are supported. The function returns NULL for all other
+ * default value types.
+ */
+static bool
+DefaultValueForColumn(TupleConstr *tupleConstraints, int columnIndex, Datum *defaultValue)
+{
+	int defaultIndex = 0;
+	int defaultCount = tupleConstraints->num_defval;
+	bool found = false;
+
+	*defaultValue = (Datum) NULL;
+
+	for (defaultIndex = 0; defaultIndex < defaultCount; defaultIndex++)
+	{
+		AttrDefault attributeDefaultValue = tupleConstraints->defval[defaultIndex];
+		if (attributeDefaultValue.adnum == (columnIndex + 1))
+		{
+			Node *defValNode  = stringToNode(attributeDefaultValue.adbin);
+			if (IsA(defValNode, Const))
+			{
+				Const *constNode = (Const*) defValNode;
+				*defaultValue = constNode->constvalue;
+				found = true;
+			}
+		}
+	}
+
+	return found;
 }
 
 

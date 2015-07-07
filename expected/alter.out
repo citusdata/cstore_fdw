@@ -1,0 +1,209 @@
+--
+-- Testing ALTER TABLE on cstore_fdw tables.
+--
+-- DROP COLUMN TESTS
+CREATE FOREIGN TABLE test_alter_drop_column (a int, b int, c int) SERVER cstore_server;
+SELECT count(*) FROM test_alter_drop_column;
+ count 
+-------
+     0
+(1 row)
+
+-- insert few rows
+INSERT INTO test_alter_drop_column (SELECT 1, 2, 3);
+INSERT INTO test_alter_drop_column (SELECT 4, 5, 6);
+INSERT INTO test_alter_drop_column (SELECT 7, 8, 9);
+SELECT count(*) FROM test_alter_drop_column;
+ count 
+-------
+     3
+(1 row)
+
+-- drop a column
+ALTER FOREIGN TABLE test_alter_drop_column DROP COLUMN a;
+-- test analyze
+ANALYZE test_alter_drop_column;
+-- verify select runs fine
+SELECT * FROM test_alter_drop_column;
+ b | c 
+---+---
+ 2 | 3
+ 5 | 6
+ 8 | 9
+(3 rows)
+
+-- verify column is dropped and errors here
+SELECT a FROM test_alter_drop_column;
+ERROR:  column "a" does not exist
+LINE 1: SELECT a FROM test_alter_drop_column;
+               ^
+-- should return all b's
+SELECT b FROM test_alter_drop_column;
+ b 
+---
+ 2
+ 5
+ 8
+(3 rows)
+
+-- should fail
+INSERT INTO test_alter_drop_column (SELECT 3, 5, 8);
+ERROR:  INSERT has more expressions than target columns
+LINE 1: INSERT INTO test_alter_drop_column (SELECT 3, 5, 8);
+                                                         ^
+-- should succeed
+INSERT INTO test_alter_drop_column (SELECT 3, 5, 8);
+ERROR:  INSERT has more expressions than target columns
+LINE 1: INSERT INTO test_alter_drop_column (SELECT 3, 5, 8);
+                                                         ^
+SELECT * from test_alter_drop_column;
+ b | c 
+---+---
+ 2 | 3
+ 5 | 6
+ 8 | 9
+(3 rows)
+
+DROP FOREIGN TABLE test_alter_drop_column;
+-- ADD COLUMN TESTS
+CREATE FOREIGN TABLE test_alter_add_column (a int) SERVER cstore_server;
+SELECT count(*) FROM test_alter_add_column;
+ count 
+-------
+     0
+(1 row)
+
+--insert some rows
+INSERT INTO test_alter_add_column select * from generate_series(1,10);
+-- verify they are inserted
+SELECT * from test_alter_add_column;
+ a  
+----
+  1
+  2
+  3
+  4
+  5
+  6
+  7
+  8
+  9
+ 10
+(10 rows)
+
+ALTER FOREIGN TABLE test_alter_add_column ADD COLUMN b int;
+-- this should display b column with no values
+SELECT * from test_alter_add_column;
+ a  | b 
+----+---
+  1 |  
+  2 |  
+  3 |  
+  4 |  
+  5 |  
+  6 |  
+  7 |  
+  8 |  
+  9 |  
+ 10 |  
+(10 rows)
+
+ALTER FOREIGN TABLE test_alter_add_column ADD COLUMN c int default 3;
+-- this should display c column with default 3
+SELECT * from test_alter_add_column;
+ a  | b | c 
+----+---+---
+  1 |   | 3
+  2 |   | 3
+  3 |   | 3
+  4 |   | 3
+  5 |   | 3
+  6 |   | 3
+  7 |   | 3
+  8 |   | 3
+  9 |   | 3
+ 10 |   | 3
+(10 rows)
+
+INSERT INTO test_alter_add_column(a,b) (select a, a from generate_series(11, 20) a);
+-- this should display c column with default 3
+SELECT * from test_alter_add_column;
+ a  | b  | c 
+----+----+---
+  1 |    | 3
+  2 |    | 3
+  3 |    | 3
+  4 |    | 3
+  5 |    | 3
+  6 |    | 3
+  7 |    | 3
+  8 |    | 3
+  9 |    | 3
+ 10 |    | 3
+ 11 | 11 | 3
+ 12 | 12 | 3
+ 13 | 13 | 3
+ 14 | 14 | 3
+ 15 | 15 | 3
+ 16 | 16 | 3
+ 17 | 17 | 3
+ 18 | 18 | 3
+ 19 | 19 | 3
+ 20 | 20 | 3
+(20 rows)
+
+ALTER FOREIGN TABLE test_alter_add_column ADD COLUMN d text DEFAULT 'TEXT ME';
+-- this should display d column with default text me
+SELECT * from test_alter_add_column;
+ a  | b  | c |    d    
+----+----+---+---------
+  1 |    | 3 | TEXT ME
+  2 |    | 3 | TEXT ME
+  3 |    | 3 | TEXT ME
+  4 |    | 3 | TEXT ME
+  5 |    | 3 | TEXT ME
+  6 |    | 3 | TEXT ME
+  7 |    | 3 | TEXT ME
+  8 |    | 3 | TEXT ME
+  9 |    | 3 | TEXT ME
+ 10 |    | 3 | TEXT ME
+ 11 | 11 | 3 | TEXT ME
+ 12 | 12 | 3 | TEXT ME
+ 13 | 13 | 3 | TEXT ME
+ 14 | 14 | 3 | TEXT ME
+ 15 | 15 | 3 | TEXT ME
+ 16 | 16 | 3 | TEXT ME
+ 17 | 17 | 3 | TEXT ME
+ 18 | 18 | 3 | TEXT ME
+ 19 | 19 | 3 | TEXT ME
+ 20 | 20 | 3 | TEXT ME
+(20 rows)
+
+-- drop a column to make sure nothing is broken
+ALTER FOREIGN TABLE test_alter_add_column DROP COLUMN a;
+SELECT * from test_alter_add_column;
+ b  | c |    d    
+----+---+---------
+    | 3 | TEXT ME
+    | 3 | TEXT ME
+    | 3 | TEXT ME
+    | 3 | TEXT ME
+    | 3 | TEXT ME
+    | 3 | TEXT ME
+    | 3 | TEXT ME
+    | 3 | TEXT ME
+    | 3 | TEXT ME
+    | 3 | TEXT ME
+ 11 | 3 | TEXT ME
+ 12 | 3 | TEXT ME
+ 13 | 3 | TEXT ME
+ 14 | 3 | TEXT ME
+ 15 | 3 | TEXT ME
+ 16 | 3 | TEXT ME
+ 17 | 3 | TEXT ME
+ 18 | 3 | TEXT ME
+ 19 | 3 | TEXT ME
+ 20 | 3 | TEXT ME
+(20 rows)
+
+DROP FOREIGN TABLE test_alter_add_column;
