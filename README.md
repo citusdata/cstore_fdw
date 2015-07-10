@@ -115,13 +115,13 @@ most efficient execution plan for each query.
 commands. We also don't support single row inserts.
 
 
-Updating from version 1.0 or 1.1 to 1.2
----------------------------------------
+Updating from version 1.0, 1.1 or 1.2 to 1.3
+--------------------------------------------
 
-To update your existing cstore_fdw installation from version 1.0 or 1.1 to 1.2,
+To update your existing cstore_fdw installation from version 1.0, 1.1, or 1.2 to 1.3
 you can take the following steps:
 
-* Download and install cstore_fdw version 1.2 using instructions from the "Building"
+* Download and install cstore_fdw version 1.3 using instructions from the "Building"
   section,
 * Restart the PostgreSQL server,
 * Run the ```ALTER EXTENSION cstore_fdw UPDATE;``` command.
@@ -283,6 +283,13 @@ the installation:
 
 Changeset
 ---------
+
+### Version 1.3
+* (Feature) Added support for ```ALTER TABLE ADD COLUMN``` and ```ALTER TABLE DROP COLUMN```
+* (Feature) Added column list support in ```COPY FROM```
+* (Fix) Deadlock during concurrent inserts.
+* (Fix) Whole row references return empty result.
+* (Fix) Invalid row count estimation causing slow query execution.
 
 ### Version 1.2
 

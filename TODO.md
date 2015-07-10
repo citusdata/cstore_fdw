@@ -4,13 +4,10 @@ To see the list of features and bug-fixes planned for next releases, see our
 Requested Features
 ------------------
 
-* Improve query cost estimation
 * Improve write performance
 * Improve read performance
 * Add checksum logic
 * Add new compression methods
-* Enable ALTER FOREIGN TABLE ADD COLUMN
-* Enable ALTER FOREIGN TABLE DROP COLUMN
 * Enable INSERT/DELETE/UPDATE
 * Enable users other than superuser to safely create columnar tables (permissions)
 * Transactional semantics
@@ -27,8 +24,6 @@ Known Issues
   command prints incorrect file size.
 * If two different columnar tables are configured to point to the same file,
   writes to the underlying file aren't protected from each other.
-* Hstore and json types work. However, constructors for hstore and json types
-  applied on a tuple return NULL.
 * When a data load is in progress, concurrent reads on the table overestimate the
   page count.
 * We have a minor memory leak in CStoreEndWrite. We need to also free the
@@ -38,7 +33,9 @@ Known Issues
 * We don't yet incorporate the compression method's impact on disk I/O into cost
   estimates.
 * CitusDB integration errors:
-  * Concurrent staging cstore\_fdw tables doesn't work.
+* Concurrent staging cstore\_fdw tables doesn't work.
+* Setting a default value for column with ALTER TABLE has limited support for
+  existing rows.
 
 [roadmap]: https://github.com/citusdata/cstore_fdw/wiki/Roadmap
 
