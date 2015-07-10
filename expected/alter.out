@@ -1,0 +1,65 @@
+--
+-- Testing ALTER TABLE on cstore_fdw tables.
+--
+-- DROP COLUMN TESTS
+CREATE FOREIGN TABLE test_alter_drop_column (a int, b int, c int) SERVER cstore_server;
+SELECT count(*) FROM test_alter_drop_column;
+ count 
+-------
+     0
+(1 row)
+
+-- insert few rows
+INSERT INTO test_alter_drop_column (SELECT 1, 2, 3);
+INSERT INTO test_alter_drop_column (SELECT 4, 5, 6);
+INSERT INTO test_alter_drop_column (SELECT 7, 8, 9);
+SELECT count(*) FROM test_alter_drop_column;
+ count 
+-------
+     3
+(1 row)
+
+-- drop a column
+ALTER FOREIGN TABLE test_alter_drop_column DROP COLUMN a;
+-- test analyze
+ANALYZE test_alter_drop_column;
+-- verify select runs fine
+SELECT * FROM test_alter_drop_column;
+ b | c 
+---+---
+ 2 | 3
+ 5 | 6
+ 8 | 9
+(3 rows)
+
+-- verify column is dropped and errors here
+SELECT a FROM test_alter_drop_column;
+ERROR:  column "a" does not exist
+LINE 1: SELECT a FROM test_alter_drop_column;
+               ^
+-- should return all b's
+SELECT b FROM test_alter_drop_column;
+ b 
+---
+ 2
+ 5
+ 8
+(3 rows)
+
+-- should fail
+INSERT INTO test_alter_drop_column (SELECT 3, 5, 8);
+ERROR:  INSERT has more expressions than target columns
+LINE 1: INSERT INTO test_alter_drop_column (SELECT 3, 5, 8);
+                                                         ^
+-- should succeed
+INSERT INTO test_alter_drop_column (SELECT 5, 8);
+SELECT * from test_alter_drop_column;
+ b | c 
+---+---
+ 2 | 3
+ 5 | 6
+ 8 | 9
+ 5 | 8
+(4 rows)
+
+DROP FOREIGN TABLE test_alter_drop_column;

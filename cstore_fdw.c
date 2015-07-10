@@ -1502,10 +1502,14 @@ CStoreAcquireSampleRows(Relation relation, int logLevel,
 		Form_pg_attribute attributeForm = attributeFormArray[columnIndex];
 		const Index tableId = 1;
 
-		Var *column = makeVar(tableId, columnIndex + 1, attributeForm->atttypid,
-							  attributeForm->atttypmod, attributeForm->attcollation, 0);
+		if (!attributeForm->attisdropped)
+		{
+			Var *column = makeVar(tableId, columnIndex + 1,
+								  attributeForm->atttypid, attributeForm->atttypmod,
+								  attributeForm->attcollation, 0);
 
-		columnList = lappend(columnList, column);
+			columnList = lappend(columnList, column);
+		}
 	}
 
 	/* setup foreign scan plan node */
