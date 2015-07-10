@@ -34,7 +34,7 @@ SELECT b FROM test_alter_drop_column;
 INSERT INTO test_alter_drop_column (SELECT 3, 5, 8);
 
 -- should succeed
-INSERT INTO test_alter_drop_column (SELECT 3, 5, 8);
+INSERT INTO test_alter_drop_column (SELECT 5, 8);
 
 SELECT * from test_alter_drop_column;
 

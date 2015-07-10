@@ -52,16 +52,14 @@ ERROR:  INSERT has more expressions than target columns
 LINE 1: INSERT INTO test_alter_drop_column (SELECT 3, 5, 8);
                                                          ^
 -- should succeed
-INSERT INTO test_alter_drop_column (SELECT 3, 5, 8);
-ERROR:  INSERT has more expressions than target columns
-LINE 1: INSERT INTO test_alter_drop_column (SELECT 3, 5, 8);
-                                                         ^
+INSERT INTO test_alter_drop_column (SELECT 5, 8);
 SELECT * from test_alter_drop_column;
  b | c 
 ---+---
  2 | 3
  5 | 6
  8 | 9
-(3 rows)
+ 5 | 8
+(4 rows)
 
 DROP FOREIGN TABLE test_alter_drop_column;
