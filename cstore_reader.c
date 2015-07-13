@@ -692,8 +692,8 @@ LoadStripeSkipList(FILE *tableFile, StripeMetadata *stripeMetadata,
 		{
 			columnSkipList->rowCount = 0;
 			columnSkipList->hasMinMax = false;
-			columnSkipList->minimumValue = (Datum)NULL;
-			columnSkipList->maximumValue = (Datum)NULL;
+			columnSkipList->minimumValue = (Datum) 0;
+			columnSkipList->maximumValue = (Datum) 0;
 			columnSkipList->existsBlockOffset = 0;
 			columnSkipList->valueBlockOffset = 0;
 			columnSkipList->existsLength = 0;
@@ -1130,7 +1130,7 @@ DeserializeDatumArray(StringInfo datumBuffer, bool *existsArray, uint32 datumCou
  * stores in blockDataArray. It uncompresses serialized data if necessary. The
  * function also deallocates data buffers used for previous block, and compressed
  * data buffers for the current block which will not be needed again. If a column
- * data is not present serialized buffer, than default value (or null) is used
+ * data is not present serialized buffer, then default value (or null) is used
  * to fill value array.
  */
 static void
@@ -1144,7 +1144,12 @@ DeserializeBlockData(StripeBuffers *stripeBuffers, uint64 blockIndex,
 		ColumnBlockData *blockData = blockDataArray[columnIndex];
 		Form_pg_attribute attributeForm = attributeFormArray[columnIndex];
 		ColumnBuffers *columnBuffers = stripeBuffers->columnBuffersArray[columnIndex];
-		bool columnAdded = (columnBuffers == NULL) && (blockData != NULL);
+		bool columnAdded = false;
+
+		if ((columnBuffers == NULL) && (blockData != NULL))
+		{
+			columnAdded = true;
+		}
 
 		if (columnBuffers != NULL)
 		{
@@ -1181,7 +1186,7 @@ DeserializeBlockData(StripeBuffers *stripeBuffers, uint64 blockIndex,
 			/* populate exists and value buffers for missing column */
 			int rowIndex = 0;
 			bool useDefaultValue = attributeForm->atthasdef;
-			Datum defaultValue = (Datum) NULL;
+			Datum defaultValue = (Datum) 0;
 
 			if (useDefaultValue)
 			{
@@ -1214,7 +1219,7 @@ DefaultValueForColumn(TupleConstr *tupleConstraints, int columnIndex, Datum *def
 	int defaultCount = tupleConstraints->num_defval;
 	bool found = false;
 
-	*defaultValue = (Datum) NULL;
+	*defaultValue = (Datum) 0;
 
 	for (defaultIndex = 0; defaultIndex < defaultCount; defaultIndex++)
 	{
