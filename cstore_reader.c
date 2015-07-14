@@ -77,7 +77,9 @@ static void DeserializeBlockData(StripeBuffers *stripeBuffers, uint64 blockIndex
 								 Form_pg_attribute *attributeFormArray,
 								 uint32 rowCount, ColumnBlockData **blockDataArray,
 								 TupleDesc tupleDescriptor);
-static bool DefaultValueForColumn(TupleConstr *tupleConstraints, int columnIndex, Datum *defaultValue);
+static bool DefaultValueForColumn(TupleConstr *tupleConstraints, int columnIndex,
+								  char* columnName, Datum *defaultValue);
+static Datum ExtractDefaultValueForColumn(char *columnName, char* defaultExpression);
 static int64 FileSize(FILE *file);
 static StringInfo ReadFromFile(FILE *file, uint64 offset, uint32 size);
 static StringInfo DecompressBuffer(StringInfo buffer, CompressionType compressionType);
@@ -1187,11 +1189,13 @@ DeserializeBlockData(StripeBuffers *stripeBuffers, uint64 blockIndex,
 			int rowIndex = 0;
 			bool useDefaultValue = attributeForm->atthasdef;
 			Datum defaultValue = (Datum) 0;
+			char *columnName = attributeForm->attname.data;
 
 			if (useDefaultValue)
 			{
 				useDefaultValue = DefaultValueForColumn(tupleDescriptor->constr,
-													 columnIndex, &defaultValue);
+														columnIndex, columnName,
+														&defaultValue);
 			}
 
 			for (rowIndex = 0; rowIndex < rowCount; rowIndex++)
@@ -1213,7 +1217,8 @@ DeserializeBlockData(StripeBuffers *stripeBuffers, uint64 blockIndex,
  * default value types.
  */
 static bool
-DefaultValueForColumn(TupleConstr *tupleConstraints, int columnIndex, Datum *defaultValue)
+DefaultValueForColumn(TupleConstr *tupleConstraints, int columnIndex, char* columnName,
+					  Datum *defaultValue)
 {
 	int defaultIndex = 0;
 	int defaultCount = tupleConstraints->num_defval;
@@ -1224,19 +1229,59 @@ DefaultValueForColumn(TupleConstr *tupleConstraints, int columnIndex, Datum *def
 	for (defaultIndex = 0; defaultIndex < defaultCount; defaultIndex++)
 	{
 		AttrDefault attributeDefaultValue = tupleConstraints->defval[defaultIndex];
+		char *defaultExpression = attributeDefaultValue.adbin;
+
 		if (attributeDefaultValue.adnum == (columnIndex + 1))
 		{
-			Node *defValNode  = stringToNode(attributeDefaultValue.adbin);
-			if (IsA(defValNode, Const))
-			{
-				Const *constNode = (Const*) defValNode;
-				*defaultValue = constNode->constvalue;
-				found = true;
-			}
+			*defaultValue = ExtractDefaultValueForColumn(columnName, defaultExpression);
+			found = true;
 		}
 	}
 
 	return found;
+}
+
+
+/*
+ * ExtractDefaultValueForColumn returns default value for a column from given default
+ * expression. Default expression must be an immutable expressions that evaluate to
+ * constant value. The function fails with an error if default expression is not
+ * supported.
+ */
+static Datum
+ExtractDefaultValueForColumn(char *columnName, char* defaultExpression)
+{
+	Node *defaultValueNode  = stringToNode(defaultExpression);
+	bool containsMutableFunction = contain_mutable_functions(defaultValueNode);
+	Datum defaultValue = (Datum) 0;
+
+	if (!containsMutableFunction)
+	{
+		Node *evaluatedValue = NULL;
+
+		evaluatedValue = eval_const_expressions(NULL, defaultValueNode);
+		defaultValueNode = evaluatedValue;
+
+		if (IsA(defaultValueNode, Const))
+		{
+			Const *constNode = (Const*) defaultValueNode;
+			defaultValue = constNode->constvalue;
+		}
+		else
+		{
+			ereport(ERROR, (errmsg("Unsupported default value for column %s",
+								   columnName),
+							errhint("Expression does not evaluate to constant value")));
+		}
+
+	}
+	else
+	{
+		ereport(ERROR, (errmsg("Unsupported default value for column %s", columnName),
+						errhint("Only immutable expressions are supported")));
+	}
+
+	return defaultValue;
 }
 
 

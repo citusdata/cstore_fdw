@@ -204,4 +204,38 @@ SELECT * from test_alter_add_column;
  20 | 3 | TEXT ME
 (20 rows)
 
+-- not supported default value
+ALTER FOREIGN TABLE test_alter_add_column ADD COLUMN e DATE DEFAULT current_date;
+-- this query should fail with error
+SELECT * FROM test_alter_add_column;
+ERROR:  Unsupported default value for column e
+HINT:  Only immutable expressions are supported
+-- drop default value and see it succeeds
+ALTER FOREIGN TABLE test_alter_add_column ALTER COLUMN e DROP DEFAULT;
+-- should return null values for column e
+SELECT * FROM test_alter_add_column;
+ b  | c |    d    | e 
+----+---+---------+---
+    | 3 | TEXT ME | 
+    | 3 | TEXT ME | 
+    | 3 | TEXT ME | 
+    | 3 | TEXT ME | 
+    | 3 | TEXT ME | 
+    | 3 | TEXT ME | 
+    | 3 | TEXT ME | 
+    | 3 | TEXT ME | 
+    | 3 | TEXT ME | 
+    | 3 | TEXT ME | 
+ 11 | 3 | TEXT ME | 
+ 12 | 3 | TEXT ME | 
+ 13 | 3 | TEXT ME | 
+ 14 | 3 | TEXT ME | 
+ 15 | 3 | TEXT ME | 
+ 16 | 3 | TEXT ME | 
+ 17 | 3 | TEXT ME | 
+ 18 | 3 | TEXT ME | 
+ 19 | 3 | TEXT ME | 
+ 20 | 3 | TEXT ME | 
+(20 rows)
+
 DROP FOREIGN TABLE test_alter_add_column;

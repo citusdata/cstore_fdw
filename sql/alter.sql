@@ -78,4 +78,16 @@ ALTER FOREIGN TABLE test_alter_add_column DROP COLUMN a;
 
 SELECT * from test_alter_add_column;
 
+-- not supported default value
+ALTER FOREIGN TABLE test_alter_add_column ADD COLUMN e DATE DEFAULT current_date;
+
+-- this query should fail with error
+SELECT * FROM test_alter_add_column;
+
+-- drop default value and see it succeeds
+ALTER FOREIGN TABLE test_alter_add_column ALTER COLUMN e DROP DEFAULT;
+
+-- should return null values for column e
+SELECT * FROM test_alter_add_column;
+
 DROP FOREIGN TABLE test_alter_add_column;
