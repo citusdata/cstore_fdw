@@ -1201,7 +1201,8 @@ DeserializeBlockData(StripeBuffers *stripeBuffers, uint64 blockIndex,
 			for (rowIndex = 0; rowIndex < rowCount; rowIndex++)
 			{
 				blockData->existsArray[rowIndex] = useDefaultValue;
-				/* it is safe to assign datum value since this array content
+				/* 
+				 * It is safe to assign datum value since this array content
 				 * is never deallocated.
 				 */
 				blockData->valueArray[rowIndex] = defaultValue;
