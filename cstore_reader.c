@@ -77,9 +77,8 @@ static void DeserializeBlockData(StripeBuffers *stripeBuffers, uint64 blockIndex
 								 Form_pg_attribute *attributeFormArray,
 								 uint32 rowCount, ColumnBlockData **blockDataArray,
 								 TupleDesc tupleDescriptor);
-static bool DefaultValueForColumn(TupleConstr *tupleConstraints, int columnIndex,
-								  char* columnName, Datum *defaultValue);
-static Datum ExtractDefaultValueForColumn(char *columnName, char* defaultExpression);
+static Datum ColumnDefaultValue(TupleConstr *tupleConstraints,
+								Form_pg_attribute attributeForm);
 static int64 FileSize(FILE *file);
 static StringInfo ReadFromFile(FILE *file, uint64 offset, uint32 size);
 static StringInfo DecompressBuffer(StringInfo buffer, CompressionType compressionType);
@@ -694,8 +693,8 @@ LoadStripeSkipList(FILE *tableFile, StripeMetadata *stripeMetadata,
 		{
 			columnSkipList->rowCount = 0;
 			columnSkipList->hasMinMax = false;
-			columnSkipList->minimumValue = (Datum) 0;
-			columnSkipList->maximumValue = (Datum) 0;
+			columnSkipList->minimumValue = 0;
+			columnSkipList->maximumValue = 0;
 			columnSkipList->existsBlockOffset = 0;
 			columnSkipList->valueBlockOffset = 0;
 			columnSkipList->existsLength = 0;
@@ -1185,101 +1184,69 @@ DeserializeBlockData(StripeBuffers *stripeBuffers, uint64 blockIndex,
 		}
 		else if (columnAdded)
 		{
-			/* populate exists and value buffers for missing column */
-			int rowIndex = 0;
-			bool useDefaultValue = attributeForm->atthasdef;
-			Datum defaultValue = (Datum) 0;
-			char *columnName = attributeForm->attname.data;
-
-			if (useDefaultValue)
+			/*
+			 * This is a column that was added after creation of this stripe.
+			 * So we use either the default value or NULL.
+			 */
+			if (attributeForm->atthasdef)
 			{
-				useDefaultValue = DefaultValueForColumn(tupleDescriptor->constr,
-														columnIndex, columnName,
-														&defaultValue);
+				int rowIndex = 0;
+
+				Datum defaultValue = ColumnDefaultValue(tupleDescriptor->constr,
+														attributeForm);
+
+				for (rowIndex = 0; rowIndex < rowCount; rowIndex++)
+				{
+					blockData->existsArray[rowIndex] = true;
+					blockData->valueArray[rowIndex] = defaultValue;
+				}
+			}
+			else
+			{
+				memset(blockData->existsArray, false, rowCount);
 			}
 
-			for (rowIndex = 0; rowIndex < rowCount; rowIndex++)
-			{
-				blockData->existsArray[rowIndex] = useDefaultValue;
-				/* 
-				 * It is safe to assign datum value since this array content
-				 * is never deallocated.
-				 */
-				blockData->valueArray[rowIndex] = defaultValue;
-			}
 		}
 	}
 }
 
 
 /*
- * DefaultValueForColumn returns default value for given column.
- * Only const values are supported. The function returns NULL for all other
- * default value types.
- */
-static bool
-DefaultValueForColumn(TupleConstr *tupleConstraints, int columnIndex, char* columnName,
-					  Datum *defaultValue)
-{
-	int defaultIndex = 0;
-	int defaultCount = tupleConstraints->num_defval;
-	bool found = false;
-
-	*defaultValue = (Datum) 0;
-
-	for (defaultIndex = 0; defaultIndex < defaultCount; defaultIndex++)
-	{
-		AttrDefault attributeDefaultValue = tupleConstraints->defval[defaultIndex];
-		char *defaultExpression = attributeDefaultValue.adbin;
-
-		if (attributeDefaultValue.adnum == (columnIndex + 1))
-		{
-			*defaultValue = ExtractDefaultValueForColumn(columnName, defaultExpression);
-			found = true;
-		}
-	}
-
-	return found;
-}
-
-
-/*
- * ExtractDefaultValueForColumn returns default value for a column from given default
- * expression. Default expression must be an immutable expressions that evaluate to
- * constant value. The function fails with an error if default expression is not
- * supported.
+ * ColumnDefaultValue returns default value for given column. Only const values
+ * are supported. The function errors on any other default value expressions.
  */
 static Datum
-ExtractDefaultValueForColumn(char *columnName, char* defaultExpression)
+ColumnDefaultValue(TupleConstr *tupleConstraints, Form_pg_attribute attributeForm)
 {
-	Node *defaultValueNode  = stringToNode(defaultExpression);
-	bool containsMutableFunction = contain_mutable_functions(defaultValueNode);
-	Datum defaultValue = (Datum) 0;
+	Datum defaultValue = 0;
+	Node *defaultValueNode = NULL;
+	int defValIndex = 0;
 
-	if (!containsMutableFunction)
+	for (defValIndex = 0; defValIndex < tupleConstraints->num_defval; defValIndex++)
 	{
-		Node *evaluatedValue = NULL;
-
-		evaluatedValue = eval_const_expressions(NULL, defaultValueNode);
-		defaultValueNode = evaluatedValue;
-
-		if (IsA(defaultValueNode, Const))
+		AttrDefault defaultValue = tupleConstraints->defval[defValIndex];
+		if (defaultValue.adnum == attributeForm->attnum)
 		{
-			Const *constNode = (Const*) defaultValueNode;
-			defaultValue = constNode->constvalue;
+			defaultValueNode = stringToNode(defaultValue.adbin);
+			break;
 		}
-		else
-		{
-			ereport(ERROR, (errmsg("Unsupported default value for column %s",
-								   columnName),
-							errhint("Expression does not evaluate to constant value")));
-		}
+	}
 
+	Assert(defaultValueNode != NULL);
+
+	/* try reducing the default value node to a const node */
+	defaultValueNode = eval_const_expressions(NULL, defaultValueNode);
+	if (IsA(defaultValueNode, Const))
+	{
+		Const *constNode = (Const *) defaultValueNode;
+		defaultValue = constNode->constvalue;
 	}
 	else
 	{
-		ereport(ERROR, (errmsg("Unsupported default value for column %s", columnName),
-						errhint("Only immutable expressions are supported")));
+		const char *columnName = NameStr(attributeForm->attname);
+		ereport(ERROR, (errmsg("unsupported default value for column \"%s\"", columnName),
+						errhint("Expression is either mutable or "
+								"does not evaluate to constant value")));
 	}
 
 	return defaultValue;

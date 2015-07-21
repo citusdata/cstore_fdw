@@ -2,92 +2,67 @@
 -- Testing ALTER TABLE on cstore_fdw tables.
 --
 
--- DROP COLUMN TESTS
+CREATE FOREIGN TABLE test_alter_table (a int, b int, c int) SERVER cstore_server;
 
-CREATE FOREIGN TABLE test_alter_drop_column (a int, b int, c int) SERVER cstore_server;
-
-SELECT count(*) FROM test_alter_drop_column;
-
--- insert few rows
-INSERT INTO test_alter_drop_column (SELECT 1, 2, 3);
-INSERT INTO test_alter_drop_column (SELECT 4, 5, 6);
-INSERT INTO test_alter_drop_column (SELECT 7, 8, 9);
-
-SELECT count(*) FROM test_alter_drop_column;
+WITH sample_data AS (VALUES
+    (1, 2, 3),
+    (4, 5, 6),
+    (7, 8, 9)
+)
+INSERT INTO test_alter_table SELECT * FROM sample_data;
 
 -- drop a column
-ALTER FOREIGN TABLE test_alter_drop_column DROP COLUMN a;
+ALTER FOREIGN TABLE test_alter_table DROP COLUMN a;
 
 -- test analyze
-ANALYZE test_alter_drop_column;
+ANALYZE test_alter_table;
 
--- verify select runs fine
-SELECT * FROM test_alter_drop_column;
+-- verify select queries run as expected
+SELECT * FROM test_alter_table;
+SELECT a FROM test_alter_table;
+SELECT b FROM test_alter_table;
 
--- verify column is dropped and errors here
-SELECT a FROM test_alter_drop_column;
-
--- should return all b's
-SELECT b FROM test_alter_drop_column;
-
--- should fail
-INSERT INTO test_alter_drop_column (SELECT 3, 5, 8);
-
--- should succeed
-INSERT INTO test_alter_drop_column (SELECT 5, 8);
-
-SELECT * from test_alter_drop_column;
-
-DROP FOREIGN TABLE test_alter_drop_column;
+-- verify insert runs as expected
+INSERT INTO test_alter_table (SELECT 3, 5, 8);
+INSERT INTO test_alter_table (SELECT 5, 8);
 
 
--- ADD COLUMN TESTS
+-- add a column with no defaults
+ALTER FOREIGN TABLE test_alter_table ADD COLUMN d int;
+SELECT * FROM test_alter_table;
+INSERT INTO test_alter_table (SELECT 3, 5, 8);
+SELECT * FROM test_alter_table;
 
-CREATE FOREIGN TABLE test_alter_add_column (a int) SERVER cstore_server;
 
-SELECT count(*) FROM test_alter_add_column;
+-- add a fixed-length column with default value
+ALTER FOREIGN TABLE test_alter_table ADD COLUMN e int default 3;
+SELECT * from test_alter_table;
+INSERT INTO test_alter_table (SELECT 1, 2, 4, 8);
+SELECT * from test_alter_table;
 
---insert some rows
-INSERT INTO test_alter_add_column select * from generate_series(1,10);
 
--- verify they are inserted
-SELECT * from test_alter_add_column;
+-- add a variable-length column with default value
+ALTER FOREIGN TABLE test_alter_table ADD COLUMN f text DEFAULT 'TEXT ME';
+SELECT * from test_alter_table;
+INSERT INTO test_alter_table (SELECT 1, 2, 4, 8, 'ABCDEF');
+SELECT * from test_alter_table;
 
-ALTER FOREIGN TABLE test_alter_add_column ADD COLUMN b int;
 
--- this should display b column with no values
-SELECT * from test_alter_add_column;
+-- drop couple of columns
+ALTER FOREIGN TABLE test_alter_table DROP COLUMN c;
+ALTER FOREIGN TABLE test_alter_table DROP COLUMN e;
+ANALYZE test_alter_table;
+SELECT * from test_alter_table;
 
-ALTER FOREIGN TABLE test_alter_add_column ADD COLUMN c int default 3;
 
--- this should display c column with default 3
-SELECT * from test_alter_add_column;
+-- unsupported default values
+ALTER FOREIGN TABLE test_alter_table ADD COLUMN g boolean DEFAULT isfinite(current_date);
+ALTER FOREIGN TABLE test_alter_table ADD COLUMN h DATE DEFAULT current_date;
+SELECT * FROM test_alter_table;
+ALTER FOREIGN TABLE test_alter_table ALTER COLUMN g DROP DEFAULT;
+SELECT * FROM test_alter_table;
+ALTER FOREIGN TABLE test_alter_table ALTER COLUMN h DROP DEFAULT;
+ANALYZE test_alter_table;
+SELECT * FROM test_alter_table;
 
-INSERT INTO test_alter_add_column(a,b) (select a, a from generate_series(11, 20) a);
-
--- this should display c column with default 3
-SELECT * from test_alter_add_column;
-
-ALTER FOREIGN TABLE test_alter_add_column ADD COLUMN d text DEFAULT 'TEXT ME';
-
--- this should display d column with default text me
-SELECT * from test_alter_add_column;
-
--- drop a column to make sure nothing is broken
-ALTER FOREIGN TABLE test_alter_add_column DROP COLUMN a;
-
-SELECT * from test_alter_add_column;
-
--- not supported default value
-ALTER FOREIGN TABLE test_alter_add_column ADD COLUMN e DATE DEFAULT current_date;
-
--- this query should fail with error
-SELECT * FROM test_alter_add_column;
-
--- drop default value and see it succeeds
-ALTER FOREIGN TABLE test_alter_add_column ALTER COLUMN e DROP DEFAULT;
-
--- should return null values for column e
-SELECT * FROM test_alter_add_column;
-
-DROP FOREIGN TABLE test_alter_add_column;
+DROP FOREIGN TABLE test_alter_table;
