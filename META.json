@@ -2,15 +2,15 @@
    "name": "cstore_fdw",
    "abstract": "Columnar Store for PostgreSQL",
    "description": "PostgreSQL extension which implements a Columnar Store.",
-   "version": "1.2.0",
-   "maintainer": "Hadi Moshayedi <hadi@citusdata.com>",
+   "version": "1.3.0",
+   "maintainer": "Murat Tuncer <murat@citusdata.com>",
    "license": "apache_2_0",
    "provides": {
       "cstore_fdw": {
          "abstract": "Foreign Data Wrapper for Columnar Store Tables",
-         "file": "cstore_fdw--1.2.sql",
+         "file": "cstore_fdw--1.3.sql",
          "docfile": "README.md",
-         "version": "1.2.0"
+         "version": "1.3.0"
       }
    },
    "prereqs": {
