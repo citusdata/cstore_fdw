@@ -285,11 +285,12 @@ Changeset
 ---------
 
 ### Version 1.3
-* (Feature) Added support for ```ALTER TABLE ADD COLUMN``` and ```ALTER TABLE DROP COLUMN```
-* (Feature) Added column list support in ```COPY FROM```
-* (Fix) Deadlock during concurrent inserts.
-* (Fix) Whole row references return empty result.
-* (Fix) Invalid row count estimation causing slow query execution.
+
+* (Feature) Added support for ```ALTER TABLE ADD COLUMN``` and ```ALTER TABLE DROP COLUMN```.
+* (Feature) Added column list support in ```COPY FROM```.
+* (Optimization) Improve row count estimation, which results in better plans.
+* (Fix) Fix the deadlock issue during concurrent inserts.
+* (Fix) Return correct result when using whole row references.
 
 ### Version 1.2
 
