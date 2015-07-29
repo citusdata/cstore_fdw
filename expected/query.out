@@ -75,3 +75,10 @@ SELECT * FROM contestant_compressed ORDER BY handle;
  h      | 1987-10-26 |   2112 |       95.4 | XD      | {w,a}
 (8 rows)
 
+-- Verify that we handle whole-row references correctly
+SELECT to_json(v) FROM contestant v ORDER BY rating LIMIT 1;
+                                                     to_json                                                      
+------------------------------------------------------------------------------------------------------------------
+ {"handle":"g","birthdate":"1991-12-13","rating":1803,"percentile":85.1,"country":"XD ","achievements":["a","c"]}
+(1 row)
+

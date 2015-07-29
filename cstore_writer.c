@@ -149,9 +149,16 @@ CStoreBeginWrite(const char *filename, CompressionType compressionType,
 	comparisonFunctionArray = palloc0(columnCount * sizeof(FmgrInfo *));
 	for (columnIndex = 0; columnIndex < columnCount; columnIndex++)
 	{
-		Oid typeId = tupleDescriptor->attrs[columnIndex]->atttypid;
-		FmgrInfo *comparisonFunction = GetFunctionInfoOrNull(typeId, BTREE_AM_OID,
-															 BTORDER_PROC);
+		FmgrInfo *comparisonFunction = NULL;
+		FormData_pg_attribute *attributeForm = tupleDescriptor->attrs[columnIndex];
+
+		if (!attributeForm->attisdropped)
+		{
+			Oid typeId = attributeForm->atttypid;
+
+			comparisonFunction = GetFunctionInfoOrNull(typeId, BTREE_AM_OID, BTORDER_PROC);
+		}
+
 		comparisonFunctionArray[columnIndex] = comparisonFunction;
 	}
 

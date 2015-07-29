@@ -88,7 +88,7 @@ static ForeignScan * CStoreGetForeignPlan(PlannerInfo *root, RelOptInfo *baserel
 										  List *targetList, List *scanClauses);
 static double TupleCountEstimate(RelOptInfo *baserel, const char *filename);
 static BlockNumber PageCount(const char *filename);
-static List * ColumnList(RelOptInfo *baserel);
+static List * ColumnList(RelOptInfo *baserel, Oid foreignTableId);
 static void CStoreExplainForeignScan(ForeignScanState *scanState,
 									 ExplainState *explainState);
 static void CStoreBeginForeignScan(ForeignScanState *scanState, int executorFlags);
@@ -243,7 +243,7 @@ CStoreProcessUtility(Node *parseTree, const char *queryString,
 		List *droppedTables = DroppedCStoreFilenameList((DropStmt*) parseTree);
 
 		CallPreviousProcessUtility(parseTree, queryString, context,
-				                   paramListInfo, destReceiver, completionTag);
+								   paramListInfo, destReceiver, completionTag);
 
 		foreach(fileListCell, droppedTables)
 		{
@@ -385,23 +385,16 @@ CopyIntoCStoreTable(const CopyStmt *copyStatement, const char *queryString)
 	CStoreFdwOptions *cstoreFdwOptions = NULL;
 	MemoryContext tupleContext = NULL;
 
-	List *columnNameList = copyStatement->attlist;
-	if (columnNameList != NULL)
-	{
-		ereport(ERROR, (errcode(ERRCODE_FEATURE_NOT_SUPPORTED),
-						errmsg("copy column list is not supported")));
-	}
-
 	/* Only superuser can copy from or to local file */
 	CheckSuperuserPrivilegesForCopy(copyStatement);
 
 	Assert(copyStatement->relation != NULL);
 
 	/*
-	 * Open and lock the relation. We acquire ExclusiveLock to allow concurrent
-	 * reads, but block concurrent writes.
+	 * Open and lock the relation. We acquire ShareUpdateExclusiveLock to allow
+	 * concurrent reads, but block concurrent writes.
 	 */
-	relation = heap_openrv(copyStatement->relation, ExclusiveLock);
+	relation = heap_openrv(copyStatement->relation, ShareUpdateExclusiveLock);
 	relationId = RelationGetRelid(relation);
 
 	/* allocate column values and nulls arrays */
@@ -427,7 +420,8 @@ CopyIntoCStoreTable(const CopyStmt *copyStatement, const char *queryString)
 
 	/* init state to read from COPY data source */
 	copyState = BeginCopyFrom(relation, copyStatement->filename,
-							  copyStatement->is_program, NIL,
+							  copyStatement->is_program,
+							  copyStatement->attlist,
 							  copyStatement->options);
 
 	/* init state to write to the cstore file */
@@ -457,7 +451,7 @@ CopyIntoCStoreTable(const CopyStmt *copyStatement, const char *queryString)
 	/* end read/write sessions and close the relation */
 	EndCopyFrom(copyState);
 	CStoreEndWrite(writeState);
-	heap_close(relation, ExclusiveLock);
+	heap_close(relation, ShareUpdateExclusiveLock);
 
 	return processedRowCount;
 }
@@ -1115,7 +1109,7 @@ CStoreGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId
 	 * algorithm and using the correlation statistics to detect which columns
 	 * are in stored in sorted order.
 	 */
-	List *queryColumnList = ColumnList(baserel);
+	List *queryColumnList = ColumnList(baserel, foreignTableId);
 	uint32 queryColumnCount = list_length(queryColumnList);
 	BlockNumber relationPageCount = PageCount(cstoreFdwOptions->filename);
 	uint32 relationColumnCount = RelationGetNumberOfAttributes(relation);
@@ -1177,7 +1171,7 @@ CStoreGetForeignPlan(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId,
 	 * in executor's callback functions, so we get the column list here and put
 	 * it into foreign scan node's private list.
 	 */
-	columnList = ColumnList(baserel);
+	columnList = ColumnList(baserel, foreignTableId);
 	foreignPrivateList = list_make1(columnList);
 
 	/* create the foreign scan node */
@@ -1213,24 +1207,7 @@ TupleCountEstimate(RelOptInfo *baserel, const char *filename)
 	}
 	else
 	{
-		/*
-		 * Otherwise we have to fake it. We back into this estimate using the
-		 * planner's idea of relation width, which may be inaccurate. For better
-		 * estimates, users need to run ANALYZE.
-		 */
-		struct stat statBuffer;
-		int tupleWidth = 0;
-
-		int statResult = stat(filename, &statBuffer);
-		if (statResult < 0)
-		{
-			/* file may not be there at plan time, so use a default estimate */
-			statBuffer.st_size = 10 * BLCKSZ;
-		}
-
-		tupleWidth = MAXALIGN(baserel->width) + MAXALIGN(sizeof(HeapTupleHeaderData));
-		tupleCountEstimate = (double) statBuffer.st_size / (double) tupleWidth;
-		tupleCountEstimate = clamp_row_est(tupleCountEstimate);
+		tupleCountEstimate = (double) CStoreTableRowCount(filename);
 	}
 
 	return tupleCountEstimate;
@@ -1268,7 +1245,7 @@ PageCount(const char *filename)
  * and returns them in a new list. This function is unchanged from mongo_fdw.
  */
 static List *
-ColumnList(RelOptInfo *baserel)
+ColumnList(RelOptInfo *baserel, Oid foreignTableId)
 {
 	List *columnList = NIL;
 	List *neededColumnList = NIL;
@@ -1277,6 +1254,10 @@ ColumnList(RelOptInfo *baserel)
 	List *targetColumnList = baserel->reltargetlist;
 	List *restrictInfoList = baserel->baserestrictinfo;
 	ListCell *restrictInfoCell = NULL;
+	const AttrNumber wholeRow = 0;
+	Relation relation = heap_open(foreignTableId, AccessShareLock);
+	TupleDesc tupleDescriptor = RelationGetDescr(relation);
+	Form_pg_attribute *attributeFormArray = tupleDescriptor->attrs;
 
 	/* first add the columns used in joins and projections */
 	neededColumnList = list_copy(targetColumnList);
@@ -1311,6 +1292,16 @@ ColumnList(RelOptInfo *baserel)
 				column = neededColumn;
 				break;
 			}
+			else if (neededColumn->varattno == wholeRow)
+			{
+				Form_pg_attribute attributeForm = attributeFormArray[columnIndex - 1];
+				Index tableId = neededColumn->varno;
+
+				column = makeVar(tableId, columnIndex, attributeForm->atttypid,
+								 attributeForm->atttypmod, attributeForm->attcollation,
+								 0);
+				break;
+			}
 		}
 
 		if (column != NULL)
@@ -1318,6 +1309,8 @@ ColumnList(RelOptInfo *baserel)
 			columnList = lappend(columnList, column);
 		}
 	}
+
+	heap_close(relation, AccessShareLock);
 
 	return columnList;
 }
@@ -1509,10 +1502,12 @@ CStoreAcquireSampleRows(Relation relation, int logLevel,
 		Form_pg_attribute attributeForm = attributeFormArray[columnIndex];
 		const Index tableId = 1;
 
-		Var *column = makeVar(tableId, columnIndex + 1, attributeForm->atttypid,
-							  attributeForm->atttypmod, attributeForm->attcollation, 0);
-
-		columnList = lappend(columnList, column);
+		if (!attributeForm->attisdropped)
+		{
+			Var *column = makeVar(tableId, columnIndex + 1, attributeForm->atttypid,
+								  attributeForm->atttypmod, attributeForm->attcollation, 0);
+			columnList = lappend(columnList, column);
+		}
 	}
 
 	/* setup foreign scan plan node */
@@ -1703,7 +1698,7 @@ CStoreBeginForeignModify(ModifyTableState *modifyTableState,
 	Assert (modifyTableState->operation == CMD_INSERT);
 
 	foreignTableOid = RelationGetRelid(relationInfo->ri_RelationDesc);
-	relation = heap_open(foreignTableOid, ExclusiveLock);
+	relation = heap_open(foreignTableOid, ShareUpdateExclusiveLock);
 	cstoreFdwOptions = CStoreGetOptions(foreignTableOid);
 	tupleDescriptor = RelationGetDescr(relationInfo->ri_RelationDesc);
 
@@ -1757,7 +1752,7 @@ CStoreEndForeignModify(EState *executorState, ResultRelInfo *relationInfo)
 		Relation relation = writeState->relation;
 
 		CStoreEndWrite(writeState);
-		heap_close(relation, ExclusiveLock);
+		heap_close(relation, ShareUpdateExclusiveLock);
 	}
 }
 

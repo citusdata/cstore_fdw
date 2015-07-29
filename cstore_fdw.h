@@ -47,7 +47,7 @@
 /* CStore file signature */
 #define CSTORE_MAGIC_NUMBER "citus_cstore"
 #define CSTORE_VERSION_MAJOR 1
-#define CSTORE_VERSION_MINOR 2
+#define CSTORE_VERSION_MINOR 3
 
 /* miscellaneous defines */
 #define CSTORE_FDW_NAME "cstore_fdw"
@@ -334,6 +334,7 @@ extern ColumnBlockData ** CreateEmptyBlockDataArray(uint32 columnCount, bool *co
 													uint32 blockRowCount);
 extern void FreeColumnBlockDataArray(ColumnBlockData **blockDataArray,
 									 uint32 columnCount);
+extern uint64 CStoreTableRowCount(const char *filename);
 
 
 #endif   /* CSTORE_FDW_H */ 

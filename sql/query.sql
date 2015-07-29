@@ -18,3 +18,6 @@ SELECT avg(rating), stddev_samp(rating) FROM contestant_compressed;
 SELECT country, avg(rating) FROM contestant_compressed WHERE rating > 2200
 	GROUP BY country ORDER BY country;
 SELECT * FROM contestant_compressed ORDER BY handle;
+
+-- Verify that we handle whole-row references correctly
+SELECT to_json(v) FROM contestant v ORDER BY rating LIMIT 1;

@@ -75,12 +75,16 @@ static void DeserializeDatumArray(StringInfo datumBuffer, bool *existsArray,
 								  Datum *datumArray);
 static void DeserializeBlockData(StripeBuffers *stripeBuffers, uint64 blockIndex,
 								 Form_pg_attribute *attributeFormArray,
-								 uint32 rowCount, ColumnBlockData **blockDataArray);
+								 uint32 rowCount, ColumnBlockData **blockDataArray,
+								 TupleDesc tupleDescriptor);
+static Datum ColumnDefaultValue(TupleConstr *tupleConstraints,
+								Form_pg_attribute attributeForm);
 static int64 FileSize(FILE *file);
 static StringInfo ReadFromFile(FILE *file, uint64 offset, uint32 size);
 static StringInfo DecompressBuffer(StringInfo buffer, CompressionType compressionType);
 static void ResetUncompressedBlockData(ColumnBlockData **blockDataArray,
 									   uint32 columnCount);
+static uint64 StripeRowCount(FILE *tableFile, StripeMetadata *stripeMetadata);
 
 
 /*
@@ -297,7 +301,8 @@ CStoreReadNextRow(TableReadState *readState, Datum *columnValues, bool *columnNu
 		oldContext = MemoryContextSwitchTo(readState->stripeReadContext);
 
 		DeserializeBlockData(readState->stripeBuffers, blockIndex, attributeFormArray,
-							 blockRowCount, readState->blockDataArray);
+							 blockRowCount, readState->blockDataArray,
+							 readState->tupleDescriptor);
 
 		MemoryContextSwitchTo(oldContext);
 
@@ -390,6 +395,71 @@ FreeColumnBlockDataArray(ColumnBlockData **blockDataArray, uint32 columnCount)
 }
 
 
+/* CStoreTableRowCount returns the exact row count of a table using skiplists */
+uint64
+CStoreTableRowCount(const char *filename)
+{
+	TableFooter *tableFooter = NULL;
+	FILE *tableFile;
+	ListCell *stripeMetadataCell = NULL;
+	uint64 totalRowCount = 0;
+
+	StringInfo tableFooterFilename = makeStringInfo();
+
+	appendStringInfo(tableFooterFilename, "%s%s", filename, CSTORE_FOOTER_FILE_SUFFIX);
+
+	tableFooter = CStoreReadFooter(tableFooterFilename);
+
+	pfree(tableFooterFilename->data);
+	pfree(tableFooterFilename);
+
+	tableFile = AllocateFile(filename, PG_BINARY_R);
+	if (tableFile == NULL)
+	{
+		ereport(ERROR, (errcode_for_file_access(),
+						errmsg("could not open file \"%s\" for reading: %m", filename)));
+	}
+
+	foreach(stripeMetadataCell, tableFooter->stripeMetadataList)
+	{
+		StripeMetadata *stripeMetadata = (StripeMetadata *) lfirst(stripeMetadataCell);
+		totalRowCount += StripeRowCount(tableFile, stripeMetadata);
+	}
+
+	FreeFile(tableFile);
+
+	return totalRowCount;
+}
+
+
+/*
+ * StripeRowCount reads serialized stripe footer, the first column's
+ * skip list, and returns number of rows for given stripe.
+ */
+static uint64
+StripeRowCount(FILE *tableFile, StripeMetadata *stripeMetadata)
+{
+	uint64 rowCount = 0;
+	StripeFooter *stripeFooter = NULL;
+	StringInfo footerBuffer = NULL;
+	StringInfo firstColumnSkipListBuffer = NULL;
+	uint64 footerOffset = 0;
+
+	footerOffset += stripeMetadata->fileOffset;
+	footerOffset += stripeMetadata->skipListLength;
+	footerOffset += stripeMetadata->dataLength;
+
+	footerBuffer = ReadFromFile(tableFile, footerOffset, stripeMetadata->footerLength);
+	stripeFooter = DeserializeStripeFooter(footerBuffer);
+
+	firstColumnSkipListBuffer = ReadFromFile(tableFile, stripeMetadata->fileOffset,
+	                                         stripeFooter->skipListSizeArray[0]);
+	rowCount =  DeserializeRowCount(firstColumnSkipListBuffer);
+
+	return rowCount;
+}
+
+
 /*
  * LoadFilteredStripeBuffers reads serialized stripe data from the given file.
  * The function skips over blocks whose rows are refuted by restriction qualifiers,
@@ -424,7 +494,7 @@ LoadFilteredStripeBuffers(FILE *tableFile, StripeMetadata *stripeMetadata,
 	columnBuffersArray = palloc0(columnCount * sizeof(ColumnBuffers *));
 	currentColumnFileOffset = stripeMetadata->fileOffset + stripeMetadata->skipListLength;
 
-	for (columnIndex = 0; columnIndex < columnCount; columnIndex++)
+	for (columnIndex = 0; columnIndex < stripeFooter->columnCount; columnIndex++)
 	{
 		uint64 existsSize = stripeFooter->existsSizeArray[columnIndex];
 		uint64 valueSize = stripeFooter->valueSizeArray[columnIndex];
@@ -561,7 +631,7 @@ LoadStripeFooter(FILE *tableFile, StripeMetadata *stripeMetadata,
 
 	footerBuffer = ReadFromFile(tableFile, footerOffset, stripeMetadata->footerLength);
 	stripeFooter = DeserializeStripeFooter(footerBuffer);
-	if (stripeFooter->columnCount != columnCount)
+	if (stripeFooter->columnCount > columnCount)
 	{
 		ereport(ERROR, (errmsg("stripe footer column count and table column count "
 							   "don't match")));
@@ -583,6 +653,7 @@ LoadStripeSkipList(FILE *tableFile, StripeMetadata *stripeMetadata,
 	uint64 currentColumnSkipListFileOffset = 0;
 	uint32 columnIndex = 0;
 	uint32 stripeBlockCount = 0;
+	uint32 stripeColumnCount = stripeFooter->columnCount;
 
 	/* deserialize block count */
 	firstColumnSkipListBuffer = ReadFromFile(tableFile, stripeMetadata->fileOffset,
@@ -593,7 +664,7 @@ LoadStripeSkipList(FILE *tableFile, StripeMetadata *stripeMetadata,
 	blockSkipNodeArray = palloc0(columnCount * sizeof(ColumnBlockSkipNode *));
 	currentColumnSkipListFileOffset = stripeMetadata->fileOffset;
 
-	for (columnIndex = 0; columnIndex < columnCount; columnIndex++)
+	for (columnIndex = 0; columnIndex < stripeColumnCount; columnIndex++)
 	{
 		uint64 columnSkipListSize = stripeFooter->skipListSizeArray[columnIndex];
 		Form_pg_attribute attributeForm = attributeFormArray[columnIndex];
@@ -607,6 +678,30 @@ LoadStripeSkipList(FILE *tableFile, StripeMetadata *stripeMetadata,
 		blockSkipNodeArray[columnIndex] = columnSkipList;
 
 		currentColumnSkipListFileOffset += columnSkipListSize;
+	}
+
+	/* table contains additional columns added after this stripe is created */
+	for (columnIndex = stripeColumnCount; columnIndex < columnCount; columnIndex++)
+	{
+		ColumnBlockSkipNode *columnSkipList = NULL;
+		uint32 blockIndex = 0;
+
+		/* create empty ColumnBlockSkipNode for missing columns*/
+		columnSkipList = palloc0(stripeBlockCount * sizeof(ColumnBlockSkipNode));
+
+		for (blockIndex = 0; blockIndex < stripeBlockCount; blockIndex++)
+		{
+			columnSkipList->rowCount = 0;
+			columnSkipList->hasMinMax = false;
+			columnSkipList->minimumValue = 0;
+			columnSkipList->maximumValue = 0;
+			columnSkipList->existsBlockOffset = 0;
+			columnSkipList->valueBlockOffset = 0;
+			columnSkipList->existsLength = 0;
+			columnSkipList->valueLength = 0;
+			columnSkipList->valueCompressionType = COMPRESSION_NONE;
+		}
+		blockSkipNodeArray[columnIndex] = columnSkipList;
 	}
 
 	stripeSkipList = palloc0(sizeof(StripeSkipList));
@@ -1035,22 +1130,31 @@ DeserializeDatumArray(StringInfo datumBuffer, bool *existsArray, uint32 datumCou
  * DeserializeBlockData deserializes requested data block for all columns and
  * stores in blockDataArray. It uncompresses serialized data if necessary. The
  * function also deallocates data buffers used for previous block, and compressed
- * data buffers for the current block which will not be needed again.
+ * data buffers for the current block which will not be needed again. If a column
+ * data is not present serialized buffer, then default value (or null) is used
+ * to fill value array.
  */
 static void
 DeserializeBlockData(StripeBuffers *stripeBuffers, uint64 blockIndex,
 					 Form_pg_attribute *attributeFormArray, uint32 rowCount,
-					 ColumnBlockData **blockDataArray)
+					 ColumnBlockData **blockDataArray, TupleDesc tupleDescriptor)
 {
 	int columnIndex = 0;
 	for (columnIndex = 0; columnIndex < stripeBuffers->columnCount; columnIndex++)
 	{
+		ColumnBlockData *blockData = blockDataArray[columnIndex];
+		Form_pg_attribute attributeForm = attributeFormArray[columnIndex];
 		ColumnBuffers *columnBuffers = stripeBuffers->columnBuffersArray[columnIndex];
+		bool columnAdded = false;
+
+		if ((columnBuffers == NULL) && (blockData != NULL))
+		{
+			columnAdded = true;
+		}
+
 		if (columnBuffers != NULL)
 		{
 			ColumnBlockBuffers *blockBuffers = columnBuffers->blockBuffersArray[blockIndex];
-			Form_pg_attribute attributeForm = attributeFormArray[columnIndex];
-			ColumnBlockData *blockData = blockDataArray[columnIndex];
 			StringInfo valueBuffer = NULL;
 
 			/* free previous block's data buffers */
@@ -1078,7 +1182,74 @@ DeserializeBlockData(StripeBuffers *stripeBuffers, uint64 blockIndex,
 			/* store current block's data buffer to be freed at next block read */
 			blockData->valueBuffer = valueBuffer;
 		}
+		else if (columnAdded)
+		{
+			/*
+			 * This is a column that was added after creation of this stripe.
+			 * So we use either the default value or NULL.
+			 */
+			if (attributeForm->atthasdef)
+			{
+				int rowIndex = 0;
+
+				Datum defaultValue = ColumnDefaultValue(tupleDescriptor->constr,
+														attributeForm);
+
+				for (rowIndex = 0; rowIndex < rowCount; rowIndex++)
+				{
+					blockData->existsArray[rowIndex] = true;
+					blockData->valueArray[rowIndex] = defaultValue;
+				}
+			}
+			else
+			{
+				memset(blockData->existsArray, false, rowCount);
+			}
+
+		}
 	}
+}
+
+
+/*
+ * ColumnDefaultValue returns default value for given column. Only const values
+ * are supported. The function errors on any other default value expressions.
+ */
+static Datum
+ColumnDefaultValue(TupleConstr *tupleConstraints, Form_pg_attribute attributeForm)
+{
+	Datum defaultValue = 0;
+	Node *defaultValueNode = NULL;
+	int defValIndex = 0;
+
+	for (defValIndex = 0; defValIndex < tupleConstraints->num_defval; defValIndex++)
+	{
+		AttrDefault defaultValue = tupleConstraints->defval[defValIndex];
+		if (defaultValue.adnum == attributeForm->attnum)
+		{
+			defaultValueNode = stringToNode(defaultValue.adbin);
+			break;
+		}
+	}
+
+	Assert(defaultValueNode != NULL);
+
+	/* try reducing the default value node to a const node */
+	defaultValueNode = eval_const_expressions(NULL, defaultValueNode);
+	if (IsA(defaultValueNode, Const))
+	{
+		Const *constNode = (Const *) defaultValueNode;
+		defaultValue = constNode->constvalue;
+	}
+	else
+	{
+		const char *columnName = NameStr(attributeForm->attname);
+		ereport(ERROR, (errmsg("unsupported default value for column \"%s\"", columnName),
+						errhint("Expression is either mutable or "
+								"does not evaluate to constant value")));
+	}
+
+	return defaultValue;
 }
 
 
