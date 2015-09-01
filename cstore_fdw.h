@@ -57,6 +57,14 @@
 #define CSTORE_POSTSCRIPT_SIZE_LENGTH 1
 #define CSTORE_POSTSCRIPT_SIZE_MAX 256
 
+/*
+ * Utilities for manipulation of header information for compressed data
+ */
+#define CSTORE_COMPRESS_HDRSZ		((int32) sizeof(CStoreCompressHeader))
+#define CSTORE_COMPRESS_RAWSIZE(ptr) (((CStoreCompressHeader *) (ptr))->rawsize)
+#define CSTORE_COMPRESS_RAWDATA(ptr) (((char *) (ptr)) + CSTORE_COMPRESS_HDRSZ)
+#define CSTORE_COMPRESS_SET_RAWSIZE(ptr, len) (((CStoreCompressHeader *) (ptr))->rawsize = (len))
+
 
 /*
  * CStoreValidOption keeps an option name and a context. When an option is passed
@@ -292,6 +300,16 @@ typedef struct TableWriteState
 	StringInfo compressionBuffer;
 
 } TableWriteState;
+
+
+/*
+ *	The information at the start of the compressed data.
+ */
+typedef struct CStoreCompressHeader
+{
+	int32		vl_len_;		/* varlena header (do not touch directly!) */
+	int32		rawsize;
+} CStoreCompressHeader;
 
 
 /* Function declarations for extension loading and unloading */

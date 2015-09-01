@@ -21,6 +21,7 @@
 #include "access/nbtree.h"
 #include "access/skey.h"
 #include "commands/defrem.h"
+#include "common/pg_lzcompress.h"
 #include "nodes/makefuncs.h"
 #include "optimizer/clauses.h"
 #include "optimizer/predtest.h"
@@ -30,7 +31,6 @@
 #include "storage/fd.h"
 #include "utils/memutils.h"
 #include "utils/lsyscache.h"
-#include "utils/pg_lzcompress.h"
 #include "utils/rel.h"
 
 
@@ -1339,12 +1339,13 @@ DecompressBuffer(StringInfo buffer, CompressionType compressionType)
 	}
 	else if (compressionType == COMPRESSION_PG_LZ)
 	{
-		PGLZ_Header *compressedData = (PGLZ_Header *) buffer->data;
-		uint32 compressedDataSize = VARSIZE(compressedData);
-		uint32 decompressedDataSize = PGLZ_RAW_SIZE(compressedData);
+		char *compressedData = CSTORE_COMPRESS_RAWDATA(buffer->data);
+		uint32 compressedDataSize = VARSIZE(buffer->data) - CSTORE_COMPRESS_HDRSZ;
+		uint32 decompressedDataSize = CSTORE_COMPRESS_RAWSIZE(buffer->data);
 		char *decompressedData = NULL;
+		uint32 decompressedByteCount = 0;
 
-		if (compressedDataSize != buffer->len)
+		if (compressedDataSize + CSTORE_COMPRESS_HDRSZ != buffer->len)
 		{
 			ereport(ERROR, (errmsg("cannot decompress the buffer"),
 							errdetail("Expected %u bytes, but received %u bytes",
@@ -1352,7 +1353,13 @@ DecompressBuffer(StringInfo buffer, CompressionType compressionType)
 		}
 
 		decompressedData = palloc0(decompressedDataSize);
-		pglz_decompress(compressedData, decompressedData);
+		decompressedByteCount = pglz_decompress(compressedData, compressedDataSize,
+								decompressedData, decompressedDataSize);
+		if (decompressedByteCount < 0)
+		{
+			ereport(ERROR, (errmsg("cannot decompress the buffer"),
+							errdetail("compressed data is corrupted")));
+		}
 
 		decompressedBuffer = palloc0(sizeof(StringInfoData));
 		decompressedBuffer->data = decompressedData;

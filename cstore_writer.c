@@ -22,12 +22,12 @@
 #include "access/nbtree.h"
 #include "catalog/pg_collation.h"
 #include "commands/defrem.h"
+#include "common/pg_lzcompress.h"
 #include "optimizer/var.h"
 #include "port.h"
 #include "storage/fd.h"
 #include "utils/memutils.h"
 #include "utils/lsyscache.h"
-#include "utils/pg_lzcompress.h"
 #include "utils/rel.h"
 
 
@@ -798,7 +798,7 @@ SerializeBlockData(TableWriteState *writeState, uint32 blockIndex, uint32 rowCou
 	for (columnIndex = 0; columnIndex < columnCount; columnIndex++)
 	{
 		uint64 maximumLength = 0;
-		bool compressable = false;
+		int32 compressedByteCount = false;
 		ColumnBuffers *columnBuffers = stripeBuffers->columnBuffersArray[columnIndex];
 		ColumnBlockBuffers *blockBuffers = columnBuffers->blockBuffersArray[blockIndex];
 		ColumnBlockData *blockData = blockDataArray[columnIndex];
@@ -817,18 +817,20 @@ SerializeBlockData(TableWriteState *writeState, uint32 blockIndex, uint32 rowCou
 		 */
 		if (requestedCompressionType == COMPRESSION_PG_LZ)
 		{
-			maximumLength = PGLZ_MAX_OUTPUT(serializedValueBuffer->len);
+			maximumLength = PGLZ_MAX_OUTPUT(serializedValueBuffer->len) + CSTORE_COMPRESS_HDRSZ;
 
 			resetStringInfo(compressionBuffer);
 			enlargeStringInfo(compressionBuffer, maximumLength);
 
-			compressable = pglz_compress((const char *) serializedValueBuffer->data,
-										  serializedValueBuffer->len,
-										  (PGLZ_Header *)compressionBuffer->data,
-										  PGLZ_strategy_always);
+			compressedByteCount = pglz_compress((const char *) serializedValueBuffer->data,
+												serializedValueBuffer->len,
+												CSTORE_COMPRESS_RAWDATA(compressionBuffer->data),
+												PGLZ_strategy_always);
 
-			if (compressable)
+			if (compressedByteCount >= 0)
 			{
+				CSTORE_COMPRESS_SET_RAWSIZE(compressionBuffer->data, serializedValueBuffer->len);
+				SET_VARSIZE_COMPRESSED(compressionBuffer->data, compressedByteCount + CSTORE_COMPRESS_HDRSZ);
 				serializedValueBuffer = compressionBuffer;
 				serializedValueBuffer->len = VARSIZE(serializedValueBuffer->data);
 				actualCompressionType = COMPRESSION_PG_LZ;
