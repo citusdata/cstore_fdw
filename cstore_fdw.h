@@ -57,6 +57,26 @@
 #define CSTORE_POSTSCRIPT_SIZE_LENGTH 1
 #define CSTORE_POSTSCRIPT_SIZE_MAX 256
 
+#if PG_VERSION_NUM >= 90500
+typedef struct PGLZ_Header
+{
+        int32           vl_len_;                /* varlena header (do not touch directly!) */
+        int32           rawsize;
+} PGLZ_Header;
+
+
+/* ----------
+ * PGLZ_RAW_SIZE -
+ *
+ *              Macro to determine the uncompressed data size contained
+ *              in the entry.
+ * ----------
+ */
+#define PGLZ_RAW_SIZE(_lzdata)                  ((_lzdata)->rawsize)
+#define PGLZ_SET_RAW_SIZE(_lzdata, l)           (_lzdata->rawsize = l)
+#endif
+
+
 
 /*
  * CStoreValidOption keeps an option name and a context. When an option is passed

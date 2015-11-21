@@ -27,7 +27,12 @@
 #include "storage/fd.h"
 #include "utils/memutils.h"
 #include "utils/lsyscache.h"
+#if PG_VERSION_NUM >= 90500
+#include "common/pg_lzcompress.h"
+#else
 #include "utils/pg_lzcompress.h"
+#endif
+
 #include "utils/rel.h"
 
 
@@ -768,6 +773,31 @@ SerializeSingleDatum(StringInfo datumBuffer, Datum datum, bool datumTypeByValue,
 
 
 /*
+ * This is a wrapper function on PostgreSQL's pglz_compress
+ * function, because PostgreSQL 9.5 changes the function signature.
+ */
+static bool
+pglz_cstore_compress(const char *source, int32 slen, PGLZ_Header *dest,
+                          const PGLZ_Strategy *strategy)
+{
+#if PG_VERSION_NUM >= 90500
+	StringInfoData *info = (StringInfoData*)dest;
+	int	compressedLength = 0;
+	char *bp = (char*)((unsigned char *) info) + sizeof(PGLZ_Header);
+
+	compressedLength = pglz_compress(source, slen, bp, strategy);
+	if (compressedLength <= 0)
+		return false;
+
+	dest->rawsize = slen;
+	SET_VARSIZE_COMPRESSED(dest, compressedLength + sizeof(PGLZ_Header));
+#else
+	return pglz_compress(source, slen, dest, strategy);
+#endif
+	return true;
+}
+
+/*
  * SerializeBlockData serializes and compresses block data at given block index with given
  * compression type for every column.
  */
@@ -795,6 +825,7 @@ SerializeBlockData(TableWriteState *writeState, uint32 blockIndex, uint32 rowCou
 	 * check and compress value buffers, if a value buffer is not compressable
 	 * then keep it as uncompressed, store compression information.
 	 */
+
 	for (columnIndex = 0; columnIndex < columnCount; columnIndex++)
 	{
 		uint64 maximumLength = 0;
@@ -822,15 +853,14 @@ SerializeBlockData(TableWriteState *writeState, uint32 blockIndex, uint32 rowCou
 			resetStringInfo(compressionBuffer);
 			enlargeStringInfo(compressionBuffer, maximumLength);
 
-			compressable = pglz_compress((const char *) serializedValueBuffer->data,
+			compressable = pglz_cstore_compress((const char *) serializedValueBuffer->data,
 										  serializedValueBuffer->len,
-										  (PGLZ_Header *)compressionBuffer->data,
+										  (PGLZ_Header*)compressionBuffer->data,
 										  PGLZ_strategy_always);
-
 			if (compressable)
 			{
 				serializedValueBuffer = compressionBuffer;
-				serializedValueBuffer->len = VARSIZE(serializedValueBuffer->data);
+				serializedValueBuffer->len = VARSIZE(compressionBuffer->data);
 				actualCompressionType = COMPRESSION_PG_LZ;
 			}
 		}
