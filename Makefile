@@ -7,7 +7,7 @@ MODULE_big = cstore_fdw
 
 PG_CPPFLAGS = --std=c99
 SHLIB_LINK = -lprotobuf-c
-OBJS = cstore.pb-c.o cstore_fdw.o cstore_writer.o cstore_reader.o \
+OBJS = cstore_utils.o cstore.pb-c.o cstore_fdw.o cstore_writer.o cstore_reader.o \
        cstore_metadata_serialization.o
 
 EXTENSION = cstore_fdw
@@ -40,8 +40,8 @@ ifndef MAJORVERSION
     MAJORVERSION := $(basename $(VERSION))
 endif
 
-ifeq (,$(findstring $(MAJORVERSION), 9.3 9.4))
-    $(error PostgreSQL 9.3 or 9.4 is required to compile this extension)
+ifeq (,$(findstring $(MAJORVERSION), 9.3 9.4 9.5))
+    $(error PostgreSQL 9.3, 9.4 or 9.5 is required to compile this extension)
 endif
 
 cstore.pb-c.c: cstore.proto

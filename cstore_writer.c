@@ -27,9 +27,8 @@
 #include "storage/fd.h"
 #include "utils/memutils.h"
 #include "utils/lsyscache.h"
-#include "utils/pg_lzcompress.h"
 #include "utils/rel.h"
-
+#include "cstore_utils.h"
 
 static void CStoreWriteFooter(StringInfo footerFileName, TableFooter *tableFooter);
 static StripeBuffers * CreateEmptyStripeBuffers(uint32 stripeMaxRowCount,
@@ -822,15 +821,15 @@ SerializeBlockData(TableWriteState *writeState, uint32 blockIndex, uint32 rowCou
 			resetStringInfo(compressionBuffer);
 			enlargeStringInfo(compressionBuffer, maximumLength);
 
-			compressable = pglz_compress((const char *) serializedValueBuffer->data,
+			compressable = cstore_pglz_compress((const char *) serializedValueBuffer->data,
 										  serializedValueBuffer->len,
-										  (PGLZ_Header *)compressionBuffer->data,
+										  (PGLZ_Header*)compressionBuffer->data,
 										  PGLZ_strategy_always);
 
 			if (compressable)
 			{
 				serializedValueBuffer = compressionBuffer;
-				serializedValueBuffer->len = VARSIZE(serializedValueBuffer->data);
+				serializedValueBuffer->len = VARSIZE(compressionBuffer->data);
 				actualCompressionType = COMPRESSION_PG_LZ;
 			}
 		}

@@ -1175,9 +1175,16 @@ CStoreGetForeignPlan(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId,
 	foreignPrivateList = list_make1(columnList);
 
 	/* create the foreign scan node */
-	foreignScan = make_foreignscan(targetList, scanClauses, baserel->relid,
-								   NIL, /* no expressions to evaluate */
-								   foreignPrivateList);
+	foreignScan = make_foreignscan(targetList,
+					scanClauses,
+					baserel->relid,
+					NIL, /* no expressions to evaluate */
+					foreignPrivateList
+#if PG_VERSION_NUM >= 90500
+					,NIL /* no custom tlist */
+					,NIL /* no remote expr */
+#endif
+					);
 
 	return foreignScan;
 }

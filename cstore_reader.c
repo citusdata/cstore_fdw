@@ -30,9 +30,8 @@
 #include "storage/fd.h"
 #include "utils/memutils.h"
 #include "utils/lsyscache.h"
-#include "utils/pg_lzcompress.h"
 #include "utils/rel.h"
-
+#include "cstore_utils.h"
 
 /* static function declarations */
 static StripeBuffers * LoadFilteredStripeBuffers(FILE *tableFile,
@@ -1352,8 +1351,7 @@ DecompressBuffer(StringInfo buffer, CompressionType compressionType)
 		}
 
 		decompressedData = palloc0(decompressedDataSize);
-		pglz_decompress(compressedData, decompressedData);
-
+		cstore_pglz_decompress(compressedData, decompressedData);
 		decompressedBuffer = palloc0(sizeof(StringInfoData));
 		decompressedBuffer->data = decompressedData;
 		decompressedBuffer->len = decompressedDataSize;
