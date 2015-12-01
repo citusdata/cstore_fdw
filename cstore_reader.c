@@ -30,13 +30,8 @@
 #include "storage/fd.h"
 #include "utils/memutils.h"
 #include "utils/lsyscache.h"
-#if PG_VERSION_NUM >= 90500
-#include "common/pg_lzcompress.h"
-#else
-#include "utils/pg_lzcompress.h"
-#endif
 #include "utils/rel.h"
-
+#include "cstore_utils.h"
 
 /* static function declarations */
 static StripeBuffers * LoadFilteredStripeBuffers(FILE *tableFile,
@@ -1326,22 +1321,6 @@ ReadFromFile(FILE *file, uint64 offset, uint32 size)
 
 
 /*
- * This is a wrapper function on PostgreSQL's pglz_decompress
- * function, because PostgreSQL 9.5 changes the function prototype.
- */
-static void
-pglz_cstore_decompress(const PGLZ_Header *source, char *dest)
-{
-#if PG_VERSION_NUM >= 90500
-	char *sp = (char*)((const unsigned char *) source) + sizeof(PGLZ_Header);
-	pglz_decompress (sp, VARSIZE(source), dest, PGLZ_RAW_SIZE(source));
-#else
-	pglz_decompress(source, dest);
-#endif
-}
-
-
-/*
  * DecompressBuffer decompresses the given buffer with the given compression
  * type. This function returns the buffer as-is when no compression is applied.
  */
@@ -1372,7 +1351,7 @@ DecompressBuffer(StringInfo buffer, CompressionType compressionType)
 		}
 
 		decompressedData = palloc0(decompressedDataSize);
-        pglz_cstore_decompress(compressedData, decompressedData);
+		cstore_pglz_decompress(compressedData, decompressedData);
 		decompressedBuffer = palloc0(sizeof(StringInfoData));
 		decompressedBuffer->data = decompressedData;
 		decompressedBuffer->len = decompressedDataSize;
