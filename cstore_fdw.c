@@ -1177,8 +1177,7 @@ CStoreGetForeignPlan(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId,
 	/* create the foreign scan node */
 	foreignScan = make_foreignscan(targetList, scanClauses, baserel->relid,
 								   NIL, /* no expressions to evaluate */
-								   foreignPrivateList,
-								   NIL);
+								   foreignPrivateList, NIL, NIL);
 
 	return foreignScan;
 }
