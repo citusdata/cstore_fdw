@@ -1343,7 +1343,7 @@ DecompressBuffer(StringInfo buffer, CompressionType compressionType)
 		uint32 compressedDataSize = VARSIZE(buffer->data) - CSTORE_COMPRESS_HDRSZ;
 		uint32 decompressedDataSize = CSTORE_COMPRESS_RAWSIZE(buffer->data);
 		char *decompressedData = NULL;
-		uint32 decompressedByteCount = 0;
+		int32 decompressedByteCount = 0;
 
 		if (compressedDataSize + CSTORE_COMPRESS_HDRSZ != buffer->len)
 		{

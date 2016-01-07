@@ -85,7 +85,7 @@ static void CStoreGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel,
 								  Oid foreignTableId);
 static ForeignScan * CStoreGetForeignPlan(PlannerInfo *root, RelOptInfo *baserel,
 										  Oid foreignTableId, ForeignPath *bestPath,
-										  List *targetList, List *scanClauses);
+										  List *targetList, List *scanClauses, Plan *outerPlan);
 static double TupleCountEstimate(RelOptInfo *baserel, const char *filename);
 static BlockNumber PageCount(const char *filename);
 static List * ColumnList(RelOptInfo *baserel, Oid foreignTableId);
@@ -1136,6 +1136,7 @@ CStoreGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId
 													   startupCost, totalCost,
 													   NIL,  /* no known ordering */
 													   NULL, /* not parameterized */
+													   NULL, /* no outer path */
 													   NIL); /* no fdw_private */
 
 	add_path(baserel, foreignScanPath);
@@ -1150,7 +1151,7 @@ CStoreGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId
  */
 static ForeignScan *
 CStoreGetForeignPlan(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId,
-					 ForeignPath *bestPath, List *targetList, List *scanClauses)
+					 ForeignPath *bestPath, List *targetList, List *scanClauses, Plan *outerPlan)
 {
 	ForeignScan *foreignScan = NULL;
 	List *columnList = NIL;
@@ -1177,7 +1178,7 @@ CStoreGetForeignPlan(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId,
 	/* create the foreign scan node */
 	foreignScan = make_foreignscan(targetList, scanClauses, baserel->relid,
 								   NIL, /* no expressions to evaluate */
-								   foreignPrivateList, NIL, NIL);
+								   foreignPrivateList, NIL, NIL, NULL);
 
 	return foreignScan;
 }
