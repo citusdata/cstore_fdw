@@ -67,7 +67,7 @@ installation's bin/ directory path. For example:
     PATH=/usr/local/pgsql/bin/:$PATH make
     sudo PATH=/usr/local/pgsql/bin/:$PATH make install
 
-**Note.** cstore_fdw requires PostgreSQL 9.3 or 9.4. It doesn't support earlier
+**Note.** cstore_fdw requires PostgreSQL 9.3, 9.4 or 9.5. It doesn't support earlier
 versions of PostgreSQL.
 
 
@@ -115,13 +115,13 @@ most efficient execution plan for each query.
 commands. We also don't support single row inserts.
 
 
-Updating from version 1.0, 1.1 or 1.2 to 1.3
---------------------------------------------
+Updating from earlier versions to 1.4
+--------------------------------------
 
-To update your existing cstore_fdw installation from version 1.0, 1.1, or 1.2 to 1.3
+To update your existing cstore_fdw installation from earlier versions 1.4 
 you can take the following steps:
 
-* Download and install cstore_fdw version 1.3 using instructions from the "Building"
+* Download and install cstore_fdw version 1.4 using instructions from the "Building"
   section,
 * Restart the PostgreSQL server,
 * Run the ```ALTER EXTENSION cstore_fdw UPDATE;``` command.
@@ -283,6 +283,10 @@ the installation:
 
 Changeset
 ---------
+### Version 1.4
+
+* (Feature) Added support for ```TRUNCATE TABLE```
+* (Fix) Added support for PostgreSQL 9.5
 
 ### Version 1.3
 
@@ -315,7 +319,7 @@ Changeset
 Copyright
 ---------
 
-Copyright (c) 2015 Citus Data, Inc.
+Copyright (c) 2016 Citus Data, Inc.
 
 This module is free software; you can redistribute it and/or modify it under the
 Apache v2.0 License.
