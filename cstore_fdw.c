@@ -66,7 +66,8 @@ static uint64 CopyIntoCStoreTable(const CopyStmt *copyStatement,
 								  const char *queryString);
 static uint64 CopyOutCStoreTable(CopyStmt* copyStatement, const char* queryString);
 static List * DroppedCStoreFilenameList(DropStmt *dropStatement);
-static void TruncateCStoreTable(TruncateStmt *truncateStatement);
+static List * FindCStoreTables(List *tableList);
+static void TruncateCStoreTables(List *cstoreTableList);
 static void DeleteCStoreTableFiles(char *filename);
 static void InitializeCStoreTableFile(Oid relationId);
 static bool CStoreTable(Oid relationId);
@@ -237,9 +238,18 @@ CStoreProcessUtility(Node *parseTree, const char *queryString,
 	}
 	else if (nodeTag(parseTree) == T_TruncateStmt)
 	{
-		TruncateCStoreTable((TruncateStmt*) parseTree);
-		CallPreviousProcessUtility(parseTree, queryString, context,
-								   paramListInfo, destReceiver, completionTag);
+		TruncateStmt *truncateStatement = (TruncateStmt *) parseTree;
+		List *allTableList = truncateStatement->relations;
+		List *cstoreTableList = FindCStoreTables(allTableList);
+		List *otherTableList = list_difference(allTableList, cstoreTableList);
+		if (list_length(otherTableList) > 0)
+		{
+			truncateStatement->relations = otherTableList;
+			CallPreviousProcessUtility(parseTree, queryString, context, paramListInfo,
+									   destReceiver, completionTag);
+		}
+
+		TruncateCStoreTables(cstoreTableList);
 	}
 	/* handle other utility statements */
 	else
@@ -521,34 +531,42 @@ DroppedCStoreFilenameList(DropStmt *dropStatement)
 }
 
 
-/*
- * TruncateCStoreTable truncates cstore tables and removes them from truncate table
- * statement relation list.
- */
-static void
-TruncateCStoreTable(TruncateStmt *truncateStatement)
+/* FindCStoreTables returns list of CStore tables from given table list */
+static List *
+FindCStoreTables(List *tableList)
 {
-	List *otherTableList = NIL;
+	List *cstoreTableList = NIL;
 	ListCell *relationCell = NULL;
-
-	foreach(relationCell, truncateStatement->relations)
+	foreach(relationCell, tableList)
 	{
 		RangeVar *rangeVar = (RangeVar *) lfirst(relationCell);
 
 		Oid relationId = RangeVarGetRelid(rangeVar, AccessShareLock, true);
 		if (CStoreTable(relationId))
 		{
-			CStoreFdwOptions *cstoreFdwOptions = CStoreGetOptions(relationId);
-			DeleteCStoreTableFiles(cstoreFdwOptions->filename);
-			InitializeCStoreTableFile(relationId);
-		}
-		else
-		{
-			otherTableList = lappend(otherTableList, rangeVar);
+			cstoreTableList = lappend(cstoreTableList, rangeVar);
 		}
 	}
 
-	truncateStatement->relations = otherTableList;
+	return cstoreTableList;
+}
+
+/* TruncateCStoreTable truncates given cstore tables */
+static void
+TruncateCStoreTables(List *cstoreTableList)
+{
+	ListCell *relationCell = NULL;
+	foreach(relationCell, cstoreTableList)
+	{
+		RangeVar *rangeVar = (RangeVar *) lfirst(relationCell);
+		Oid relationId = RangeVarGetRelid(rangeVar, AccessShareLock, true);
+
+		Assert(CStoreTable(relationId));
+
+		CStoreFdwOptions *cstoreFdwOptions = CStoreGetOptions(relationId);
+		DeleteCStoreTableFiles(cstoreFdwOptions->filename);
+		InitializeCStoreTableFile(relationId);
+	}
 }
 
 
