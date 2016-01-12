@@ -22,7 +22,6 @@
 #include "access/nbtree.h"
 #include "catalog/pg_collation.h"
 #include "commands/defrem.h"
-#include "common/pg_lzcompress.h"
 #include "optimizer/var.h"
 #include "port.h"
 #include "storage/fd.h"
@@ -797,13 +796,12 @@ SerializeBlockData(TableWriteState *writeState, uint32 blockIndex, uint32 rowCou
 	 */
 	for (columnIndex = 0; columnIndex < columnCount; columnIndex++)
 	{
-		uint64 maximumLength = 0;
-		int32 compressedByteCount = false;
 		ColumnBuffers *columnBuffers = stripeBuffers->columnBuffersArray[columnIndex];
 		ColumnBlockBuffers *blockBuffers = columnBuffers->blockBuffersArray[blockIndex];
 		ColumnBlockData *blockData = blockDataArray[columnIndex];
 		StringInfo serializedValueBuffer = NULL;
 		CompressionType actualCompressionType = COMPRESSION_NONE;
+		bool compressed = false;
 
 		serializedValueBuffer = blockData->valueBuffer;
 
@@ -815,26 +813,12 @@ SerializeBlockData(TableWriteState *writeState, uint32 blockIndex, uint32 rowCou
 		 * if serializedValueBuffer is be compressed, update serializedValueBuffer
 		 * with compressed data and store compression type.
 		 */
-		if (requestedCompressionType == COMPRESSION_PG_LZ)
+		compressed = CompressBuffer(serializedValueBuffer, compressionBuffer,
+									requestedCompressionType);
+		if (compressed)
 		{
-			maximumLength = PGLZ_MAX_OUTPUT(serializedValueBuffer->len) + CSTORE_COMPRESS_HDRSZ;
-
-			resetStringInfo(compressionBuffer);
-			enlargeStringInfo(compressionBuffer, maximumLength);
-
-			compressedByteCount = pglz_compress((const char *) serializedValueBuffer->data,
-												serializedValueBuffer->len,
-												CSTORE_COMPRESS_RAWDATA(compressionBuffer->data),
-												PGLZ_strategy_always);
-
-			if (compressedByteCount >= 0)
-			{
-				CSTORE_COMPRESS_SET_RAWSIZE(compressionBuffer->data, serializedValueBuffer->len);
-				SET_VARSIZE_COMPRESSED(compressionBuffer->data, compressedByteCount + CSTORE_COMPRESS_HDRSZ);
-				serializedValueBuffer = compressionBuffer;
-				serializedValueBuffer->len = VARSIZE(serializedValueBuffer->data);
-				actualCompressionType = COMPRESSION_PG_LZ;
-			}
+			serializedValueBuffer = compressionBuffer;
+			actualCompressionType = COMPRESSION_PG_LZ;
 		}
 
 		/* store (compressed) value buffer */

@@ -57,13 +57,6 @@
 #define CSTORE_POSTSCRIPT_SIZE_LENGTH 1
 #define CSTORE_POSTSCRIPT_SIZE_MAX 256
 
-/*
- * Utilities for manipulation of header information for compressed data
- */
-#define CSTORE_COMPRESS_HDRSZ		((int32) sizeof(CStoreCompressHeader))
-#define CSTORE_COMPRESS_RAWSIZE(ptr) (((CStoreCompressHeader *) (ptr))->rawsize)
-#define CSTORE_COMPRESS_RAWDATA(ptr) (((char *) (ptr)) + CSTORE_COMPRESS_HDRSZ)
-#define CSTORE_COMPRESS_SET_RAWSIZE(ptr, len) (((CStoreCompressHeader *) (ptr))->rawsize = (len))
 
 
 /*
@@ -301,17 +294,6 @@ typedef struct TableWriteState
 
 } TableWriteState;
 
-
-/*
- *	The information at the start of the compressed data.
- */
-typedef struct CStoreCompressHeader
-{
-	int32		vl_len_;		/* varlena header (do not touch directly!) */
-	int32		rawsize;
-} CStoreCompressHeader;
-
-
 /* Function declarations for extension loading and unloading */
 extern void _PG_init(void);
 extern void _PG_fini(void);
@@ -353,6 +335,9 @@ extern ColumnBlockData ** CreateEmptyBlockDataArray(uint32 columnCount, bool *co
 extern void FreeColumnBlockDataArray(ColumnBlockData **blockDataArray,
 									 uint32 columnCount);
 extern uint64 CStoreTableRowCount(const char *filename);
+extern bool CompressBuffer(StringInfo inputBuffer, StringInfo outputBuffer,
+						   CompressionType compressionType);
+extern StringInfo DecompressBuffer(StringInfo buffer, CompressionType compressionType);
 
 
 #endif   /* CSTORE_FDW_H */ 

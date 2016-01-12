@@ -21,7 +21,6 @@
 #include "access/nbtree.h"
 #include "access/skey.h"
 #include "commands/defrem.h"
-#include "common/pg_lzcompress.h"
 #include "nodes/makefuncs.h"
 #include "optimizer/clauses.h"
 #include "optimizer/predtest.h"
@@ -81,7 +80,6 @@ static Datum ColumnDefaultValue(TupleConstr *tupleConstraints,
 								Form_pg_attribute attributeForm);
 static int64 FileSize(FILE *file);
 static StringInfo ReadFromFile(FILE *file, uint64 offset, uint32 size);
-static StringInfo DecompressBuffer(StringInfo buffer, CompressionType compressionType);
 static void ResetUncompressedBlockData(ColumnBlockData **blockDataArray,
 									   uint32 columnCount);
 static uint64 StripeRowCount(FILE *tableFile, StripeMetadata *stripeMetadata);
@@ -1321,54 +1319,6 @@ ReadFromFile(FILE *file, uint64 offset, uint32 size)
 }
 
 
-/*
- * DecompressBuffer decompresses the given buffer with the given compression
- * type. This function returns the buffer as-is when no compression is applied.
- */
-static StringInfo
-DecompressBuffer(StringInfo buffer, CompressionType compressionType)
-{
-	StringInfo decompressedBuffer = NULL;
-
-	Assert(compressionType == COMPRESSION_NONE || compressionType == COMPRESSION_PG_LZ);
-
-	if (compressionType == COMPRESSION_NONE)
-	{
-		/* in case of no compression, return buffer */
-		decompressedBuffer = buffer;
-	}
-	else if (compressionType == COMPRESSION_PG_LZ)
-	{
-		char *compressedData = CSTORE_COMPRESS_RAWDATA(buffer->data);
-		uint32 compressedDataSize = VARSIZE(buffer->data) - CSTORE_COMPRESS_HDRSZ;
-		uint32 decompressedDataSize = CSTORE_COMPRESS_RAWSIZE(buffer->data);
-		char *decompressedData = NULL;
-		int32 decompressedByteCount = 0;
-
-		if (compressedDataSize + CSTORE_COMPRESS_HDRSZ != buffer->len)
-		{
-			ereport(ERROR, (errmsg("cannot decompress the buffer"),
-							errdetail("Expected %u bytes, but received %u bytes",
-									  compressedDataSize, buffer->len)));
-		}
-
-		decompressedData = palloc0(decompressedDataSize);
-		decompressedByteCount = pglz_decompress(compressedData, compressedDataSize,
-								decompressedData, decompressedDataSize);
-		if (decompressedByteCount < 0)
-		{
-			ereport(ERROR, (errmsg("cannot decompress the buffer"),
-							errdetail("compressed data is corrupted")));
-		}
-
-		decompressedBuffer = palloc0(sizeof(StringInfoData));
-		decompressedBuffer->data = decompressedData;
-		decompressedBuffer->len = decompressedDataSize;
-		decompressedBuffer->maxlen = decompressedDataSize;
-	}
-
-	return decompressedBuffer;
-}
 
 
 /*

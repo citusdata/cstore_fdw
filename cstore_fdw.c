@@ -83,9 +83,16 @@ static void CStoreGetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel,
 									Oid foreignTableId);
 static void CStoreGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel,
 								  Oid foreignTableId);
+#if PG_VERSION_NUM >= 90500
 static ForeignScan * CStoreGetForeignPlan(PlannerInfo *root, RelOptInfo *baserel,
 										  Oid foreignTableId, ForeignPath *bestPath,
-										  List *targetList, List *scanClauses, Plan *outerPlan);
+										  List *targetList, List *scanClauses,
+										  Plan *outerPlan);
+#else
+static ForeignScan * CStoreGetForeignPlan(PlannerInfo *root, RelOptInfo *baserel,
+										  Oid foreignTableId, ForeignPath *bestPath,
+										  List *targetList, List *scanClauses);
+#endif
 static double TupleCountEstimate(RelOptInfo *baserel, const char *filename);
 static BlockNumber PageCount(const char *filename);
 static List * ColumnList(RelOptInfo *baserel, Oid foreignTableId);
@@ -1136,7 +1143,9 @@ CStoreGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId
 													   startupCost, totalCost,
 													   NIL,  /* no known ordering */
 													   NULL, /* not parameterized */
+#if PG_VERSION_NUM >= 90500
 													   NULL, /* no outer path */
+#endif
 													   NIL); /* no fdw_private */
 
 	add_path(baserel, foreignScanPath);
@@ -1149,9 +1158,16 @@ CStoreGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId
  * table. We also add the query column list to scan nodes private list, because
  * we need it later for skipping over unused columns in the query.
  */
+#if PG_VERSION_NUM >= 90500
 static ForeignScan *
 CStoreGetForeignPlan(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId,
-					 ForeignPath *bestPath, List *targetList, List *scanClauses, Plan *outerPlan)
+					 ForeignPath *bestPath, List *targetList, List *scanClauses,
+					 Plan *outerPlan)
+#else
+static ForeignScan *
+CStoreGetForeignPlan(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId,
+					 ForeignPath *bestPath, List *targetList, List *scanClauses)
+#endif
 {
 	ForeignScan *foreignScan = NULL;
 	List *columnList = NIL;
@@ -1178,7 +1194,13 @@ CStoreGetForeignPlan(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId,
 	/* create the foreign scan node */
 	foreignScan = make_foreignscan(targetList, scanClauses, baserel->relid,
 								   NIL, /* no expressions to evaluate */
-								   foreignPrivateList, NIL, NIL, NULL);
+								   foreignPrivateList
+#if PG_VERSION_NUM >= 90500
+								   ,NIL,
+								   NIL,
+								   NULL /* no outer path */
+#endif
+									);
 
 	return foreignScan;
 }
