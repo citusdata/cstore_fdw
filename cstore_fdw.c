@@ -241,10 +241,10 @@ CStoreProcessUtility(Node *parseTree, const char *queryString,
 	else if (nodeTag(parseTree) == T_TruncateStmt)
 	{
 		TruncateStmt *truncateStatement = (TruncateStmt *) parseTree;
-		List *allTableList = truncateStatement->relations;
-		List *cstoreTableList = FindCStoreTables(allTableList);
-		List *otherTableList = list_difference(allTableList, cstoreTableList);
-		if (list_length(otherTableList) > 0)
+		List *allTablesList = truncateStatement->relations;
+		List *cstoreTablesList = FindCStoreTables(allTableList);
+		List *otherTablesList = list_difference(allTableList, cstoreTableList);
+		if (otherTablesList != NIL)
 		{
 			truncateStatement->relations = otherTableList;
 			CallPreviousProcessUtility(parseTree, queryString, context, paramListInfo,
@@ -542,7 +542,6 @@ FindCStoreTables(List *tableList)
 	foreach(relationCell, tableList)
 	{
 		RangeVar *rangeVar = (RangeVar *) lfirst(relationCell);
-
 		Oid relationId = RangeVarGetRelid(rangeVar, AccessShareLock, true);
 		if (CStoreTable(relationId))
 		{
@@ -553,6 +552,7 @@ FindCStoreTables(List *tableList)
 	return cstoreTableList;
 }
 
+
 /* TruncateCStoreTable truncates given cstore tables */
 static void
 TruncateCStoreTables(List *cstoreTableList)
@@ -562,13 +562,11 @@ TruncateCStoreTables(List *cstoreTableList)
 	{
 		RangeVar *rangeVar = (RangeVar *) lfirst(relationCell);
 		Oid relationId = RangeVarGetRelid(rangeVar, AccessShareLock, true);
-
 		Assert(CStoreTable(relationId));
 		Relation relation = heap_open(relationId, AccessExclusiveLock);
 		CStoreFdwOptions *cstoreFdwOptions = CStoreGetOptions(relationId);
 		DeleteCStoreTableFiles(cstoreFdwOptions->filename);
 		InitializeCStoreTableFile(relationId, relation);
-
 		heap_close(relation, AccessExclusiveLock);
 	}
 }
