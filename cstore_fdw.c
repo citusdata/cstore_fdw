@@ -242,16 +242,16 @@ CStoreProcessUtility(Node *parseTree, const char *queryString,
 	{
 		TruncateStmt *truncateStatement = (TruncateStmt *) parseTree;
 		List *allTablesList = truncateStatement->relations;
-		List *cstoreTablesList = FindCStoreTables(allTableList);
-		List *otherTablesList = list_difference(allTableList, cstoreTableList);
+		List *cstoreTablesList = FindCStoreTables(allTablesList);
+		List *otherTablesList = list_difference(allTablesList, cstoreTablesList);
 		if (otherTablesList != NIL)
 		{
-			truncateStatement->relations = otherTableList;
+			truncateStatement->relations = otherTablesList;
 			CallPreviousProcessUtility(parseTree, queryString, context, paramListInfo,
 									   destReceiver, completionTag);
 		}
 
-		TruncateCStoreTables(cstoreTableList);
+		TruncateCStoreTables(cstoreTablesList);
 	}
 	/* handle other utility statements */
 	else
