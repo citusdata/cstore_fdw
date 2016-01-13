@@ -69,7 +69,7 @@ static List * DroppedCStoreFilenameList(DropStmt *dropStatement);
 static List * FindCStoreTables(List *tableList);
 static void TruncateCStoreTables(List *cstoreTableList);
 static void DeleteCStoreTableFiles(char *filename);
-static void InitializeCStoreTableFile(Oid relationId);
+static void InitializeCStoreTableFile(Oid relationId, Relation relation);
 static bool CStoreTable(Oid relationId);
 static void CreateCStoreDatabaseDirectory(Oid databaseOid);
 static bool DirectoryExists(StringInfo directoryName);
@@ -188,7 +188,9 @@ cstore_ddl_event_end_trigger(PG_FUNCTION_ARGS)
 
 		Oid relationId = RangeVarGetRelid(createStatement->base.relation,
 										  AccessShareLock, false);
-		InitializeCStoreTableFile(relationId);
+		Relation relation = heap_open(relationId, AccessExclusiveLock);
+		InitializeCStoreTableFile(relationId, relation);
+		heap_close(relation, AccessExclusiveLock);
 	}
 
 	PG_RETURN_NULL();
@@ -562,10 +564,12 @@ TruncateCStoreTables(List *cstoreTableList)
 		Oid relationId = RangeVarGetRelid(rangeVar, AccessShareLock, true);
 
 		Assert(CStoreTable(relationId));
-
+		Relation relation = heap_open(relationId, AccessExclusiveLock);
 		CStoreFdwOptions *cstoreFdwOptions = CStoreGetOptions(relationId);
 		DeleteCStoreTableFiles(cstoreFdwOptions->filename);
-		InitializeCStoreTableFile(relationId);
+		InitializeCStoreTableFile(relationId, relation);
+
+		heap_close(relation, AccessExclusiveLock);
 	}
 }
 
@@ -606,12 +610,12 @@ DeleteCStoreTableFiles(char *filename)
 /*
  * InitializeCStoreTableFile creates data and footer file for a cstore table.
  * The function assumes data and footer files do not exist, therefore
- * it should be called on empty or non-existing table.
+ * it should be called on empty or non-existing table. Notice that the caller
+ * is expected to acquire AccessExclusiveLock on the relation.
  */
-static void InitializeCStoreTableFile(Oid relationId)
+static void InitializeCStoreTableFile(Oid relationId, Relation relation)
 {
 	TableWriteState *writeState = NULL;
-	Relation relation = heap_open(relationId, ExclusiveLock);
 	TupleDesc tupleDescriptor = RelationGetDescr(relation);
 	CStoreFdwOptions* cstoreFdwOptions = CStoreGetOptions(relationId);
 
@@ -623,7 +627,6 @@ static void InitializeCStoreTableFile(Oid relationId)
 			cstoreFdwOptions->compressionType, cstoreFdwOptions->stripeRowCount,
 			cstoreFdwOptions->blockRowCount, tupleDescriptor);
 	CStoreEndWrite(writeState);
-	heap_close(relation, ExclusiveLock);
 }
 
 
