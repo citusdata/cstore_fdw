@@ -30,7 +30,6 @@
 #include "storage/fd.h"
 #include "utils/memutils.h"
 #include "utils/lsyscache.h"
-#include "utils/pg_lzcompress.h"
 #include "utils/rel.h"
 
 
@@ -81,7 +80,6 @@ static Datum ColumnDefaultValue(TupleConstr *tupleConstraints,
 								Form_pg_attribute attributeForm);
 static int64 FileSize(FILE *file);
 static StringInfo ReadFromFile(FILE *file, uint64 offset, uint32 size);
-static StringInfo DecompressBuffer(StringInfo buffer, CompressionType compressionType);
 static void ResetUncompressedBlockData(ColumnBlockData **blockDataArray,
 									   uint32 columnCount);
 static uint64 StripeRowCount(FILE *tableFile, StripeMetadata *stripeMetadata);
@@ -1321,47 +1319,6 @@ ReadFromFile(FILE *file, uint64 offset, uint32 size)
 }
 
 
-/*
- * DecompressBuffer decompresses the given buffer with the given compression
- * type. This function returns the buffer as-is when no compression is applied.
- */
-static StringInfo
-DecompressBuffer(StringInfo buffer, CompressionType compressionType)
-{
-	StringInfo decompressedBuffer = NULL;
-
-	Assert(compressionType == COMPRESSION_NONE || compressionType == COMPRESSION_PG_LZ);
-
-	if (compressionType == COMPRESSION_NONE)
-	{
-		/* in case of no compression, return buffer */
-		decompressedBuffer = buffer;
-	}
-	else if (compressionType == COMPRESSION_PG_LZ)
-	{
-		PGLZ_Header *compressedData = (PGLZ_Header *) buffer->data;
-		uint32 compressedDataSize = VARSIZE(compressedData);
-		uint32 decompressedDataSize = PGLZ_RAW_SIZE(compressedData);
-		char *decompressedData = NULL;
-
-		if (compressedDataSize != buffer->len)
-		{
-			ereport(ERROR, (errmsg("cannot decompress the buffer"),
-							errdetail("Expected %u bytes, but received %u bytes",
-									  compressedDataSize, buffer->len)));
-		}
-
-		decompressedData = palloc0(decompressedDataSize);
-		pglz_decompress(compressedData, decompressedData);
-
-		decompressedBuffer = palloc0(sizeof(StringInfoData));
-		decompressedBuffer->data = decompressedData;
-		decompressedBuffer->len = decompressedDataSize;
-		decompressedBuffer->maxlen = decompressedDataSize;
-	}
-
-	return decompressedBuffer;
-}
 
 
 /*

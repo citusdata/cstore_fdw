@@ -58,6 +58,7 @@
 #define CSTORE_POSTSCRIPT_SIZE_MAX 256
 
 
+
 /*
  * CStoreValidOption keeps an option name and a context. When an option is passed
  * into cstore_fdw objects (server and foreign table), we compare this option's
@@ -293,7 +294,6 @@ typedef struct TableWriteState
 
 } TableWriteState;
 
-
 /* Function declarations for extension loading and unloading */
 extern void _PG_init(void);
 extern void _PG_fini(void);
@@ -335,6 +335,9 @@ extern ColumnBlockData ** CreateEmptyBlockDataArray(uint32 columnCount, bool *co
 extern void FreeColumnBlockDataArray(ColumnBlockData **blockDataArray,
 									 uint32 columnCount);
 extern uint64 CStoreTableRowCount(const char *filename);
+extern bool CompressBuffer(StringInfo inputBuffer, StringInfo outputBuffer,
+						   CompressionType compressionType);
+extern StringInfo DecompressBuffer(StringInfo buffer, CompressionType compressionType);
 
 
 #endif   /* CSTORE_FDW_H */ 
