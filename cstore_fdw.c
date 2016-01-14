@@ -569,9 +569,12 @@ TruncateCStoreTables(List *cstoreTableList)
 	{
 		RangeVar *rangeVar = (RangeVar *) lfirst(relationCell);
 		Oid relationId = RangeVarGetRelid(rangeVar, AccessShareLock, true);
+		Relation relation = NULL;
+		CStoreFdwOptions *cstoreFdwOptions = NULL;
+
 		Assert(CStoreTable(relationId));
-		Relation relation = heap_open(relationId, AccessExclusiveLock);
-		CStoreFdwOptions *cstoreFdwOptions = CStoreGetOptions(relationId);
+		relation = heap_open(relationId, AccessExclusiveLock);
+		cstoreFdwOptions = CStoreGetOptions(relationId);
 		DeleteCStoreTableFiles(cstoreFdwOptions->filename);
 		InitializeCStoreTableFile(relationId, relation);
 		heap_close(relation, AccessExclusiveLock);
