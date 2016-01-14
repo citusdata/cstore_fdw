@@ -14,7 +14,6 @@ CREATE FOREIGN TABLE cstore_truncate_test (a int, b int) SERVER cstore_server;
 CREATE FOREIGN TABLE cstore_truncate_test_second (a int, b int) SERVER cstore_server;
 CREATE TABLE cstore_truncate_test_regular (a int, b int);
 
-
 INSERT INTO cstore_truncate_test select a, a from generate_series(1, 10) a;
 
 -- query rows
@@ -55,9 +54,5 @@ SELECT * from cstore_truncate_test_regular;
 TRUNCATE TABLE cstore_truncate_test;
 SELECT * from cstore_truncate_test;
 
-
 DROP FOREIGN TABLE cstore_truncate_test, cstore_truncate_test_second;
-
 DROP TABLE cstore_truncate_test_regular;
-
-		   

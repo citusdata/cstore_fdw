@@ -133,4 +133,3 @@ SELECT * from cstore_truncate_test;
 
 DROP FOREIGN TABLE cstore_truncate_test, cstore_truncate_test_second;
 DROP TABLE cstore_truncate_test_regular;
-		   
