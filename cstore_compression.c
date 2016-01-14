@@ -66,6 +66,9 @@ CompressBuffer(StringInfo inputBuffer, StringInfo outputBuffer,
 {
 	uint64 maximumLength = PGLZ_MAX_OUTPUT(inputBuffer->len) + CSTORE_COMPRESS_HDRSZ;
 	bool compressionResult = false;
+#if PG_VERSION_NUM >= 90500
+	int32 compressedByteCount = 0;
+#endif
 
 	if (compressionType != COMPRESSION_PG_LZ)
 	{
@@ -76,8 +79,6 @@ CompressBuffer(StringInfo inputBuffer, StringInfo outputBuffer,
 	enlargeStringInfo(outputBuffer, maximumLength);
 
 #if PG_VERSION_NUM >= 90500
-	int32 compressedByteCount = 0;
-
 	compressedByteCount = pglz_compress((const char *) inputBuffer->data,
 										inputBuffer->len,
 										CSTORE_COMPRESS_RAWDATA(outputBuffer->data),
@@ -126,6 +127,9 @@ DecompressBuffer(StringInfo buffer, CompressionType compressionType)
 		uint32 compressedDataSize = VARSIZE(buffer->data) - CSTORE_COMPRESS_HDRSZ;
 		uint32 decompressedDataSize = CSTORE_COMPRESS_RAWSIZE(buffer->data);
 		char *decompressedData = NULL;
+#if PG_VERSION_NUM >= 90500
+		int32 decompressedByteCount = 0;
+#endif
 
 		if (compressedDataSize + CSTORE_COMPRESS_HDRSZ != buffer->len)
 		{
@@ -137,9 +141,6 @@ DecompressBuffer(StringInfo buffer, CompressionType compressionType)
 		decompressedData = palloc0(decompressedDataSize);
 
 #if PG_VERSION_NUM >= 90500
-
-		int32 decompressedByteCount = 0;
-
 		decompressedByteCount = pglz_decompress(CSTORE_COMPRESS_RAWDATA(buffer->data),
 												compressedDataSize,
 												decompressedData, decompressedDataSize);
@@ -149,11 +150,9 @@ DecompressBuffer(StringInfo buffer, CompressionType compressionType)
 			ereport(ERROR, (errmsg("cannot decompress the buffer"),
 							errdetail("compressed data is corrupted")));
 		}
-
 #else
 		pglz_decompress((PGLZ_Header *) buffer->data, decompressedData);
 #endif
-
 
 		decompressedBuffer = palloc0(sizeof(StringInfoData));
 		decompressedBuffer->data = decompressedData;

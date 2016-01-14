@@ -66,7 +66,10 @@ static uint64 CopyIntoCStoreTable(const CopyStmt *copyStatement,
 								  const char *queryString);
 static uint64 CopyOutCStoreTable(CopyStmt* copyStatement, const char* queryString);
 static List * DroppedCStoreFilenameList(DropStmt *dropStatement);
+static List * FindCStoreTables(List *tableList);
+static void TruncateCStoreTables(List *cstoreTableList);
 static void DeleteCStoreTableFiles(char *filename);
+static void InitializeCStoreTableFile(Oid relationId, Relation relation);
 static bool CStoreTable(Oid relationId);
 static void CreateCStoreDatabaseDirectory(Oid databaseOid);
 static bool DirectoryExists(StringInfo directoryName);
@@ -192,27 +195,9 @@ cstore_ddl_event_end_trigger(PG_FUNCTION_ARGS)
 
 		Oid relationId = RangeVarGetRelid(createStatement->base.relation,
 										  AccessShareLock, false);
-		if (CStoreTable(relationId))
-		{
-			TableWriteState *writeState = NULL;
-
-			Relation relation = heap_open(relationId, ExclusiveLock);
-			TupleDesc tupleDescriptor = RelationGetDescr(relation);
-			CStoreFdwOptions *cstoreFdwOptions = CStoreGetOptions(relationId);
-
-			/*
-			 * Initialize state to write to the cstore file. This creates an
-			 * empty data file and a valid footer file for the table.
-			 */
-			writeState = CStoreBeginWrite(cstoreFdwOptions->filename,
-										  cstoreFdwOptions->compressionType,
-										  cstoreFdwOptions->stripeRowCount,
-										  cstoreFdwOptions->blockRowCount,
-										  tupleDescriptor);
-			CStoreEndWrite(writeState);
-
-			heap_close(relation, ExclusiveLock);
-		}
+		Relation relation = heap_open(relationId, AccessExclusiveLock);
+		InitializeCStoreTableFile(relationId, relation);
+		heap_close(relation, AccessExclusiveLock);
 	}
 
 	PG_RETURN_NULL();
@@ -258,6 +243,22 @@ CStoreProcessUtility(Node *parseTree, const char *queryString,
 
 			DeleteCStoreTableFiles(fileName);
 		}
+
+	}
+	else if (nodeTag(parseTree) == T_TruncateStmt)
+	{
+		TruncateStmt *truncateStatement = (TruncateStmt *) parseTree;
+		List *allTablesList = truncateStatement->relations;
+		List *cstoreTablesList = FindCStoreTables(allTablesList);
+		List *otherTablesList = list_difference(allTablesList, cstoreTablesList);
+		if (otherTablesList != NIL)
+		{
+			truncateStatement->relations = otherTablesList;
+			CallPreviousProcessUtility(parseTree, queryString, context, paramListInfo,
+									   destReceiver, completionTag);
+		}
+
+		TruncateCStoreTables(cstoreTablesList);
 	}
 	/* handle other utility statements */
 	else
@@ -539,6 +540,48 @@ DroppedCStoreFilenameList(DropStmt *dropStatement)
 }
 
 
+/* FindCStoreTables returns list of CStore tables from given table list */
+static List *
+FindCStoreTables(List *tableList)
+{
+	List *cstoreTableList = NIL;
+	ListCell *relationCell = NULL;
+	foreach(relationCell, tableList)
+	{
+		RangeVar *rangeVar = (RangeVar *) lfirst(relationCell);
+		Oid relationId = RangeVarGetRelid(rangeVar, AccessShareLock, true);
+		if (CStoreTable(relationId))
+		{
+			cstoreTableList = lappend(cstoreTableList, rangeVar);
+		}
+	}
+
+	return cstoreTableList;
+}
+
+
+/* TruncateCStoreTable truncates given cstore tables */
+static void
+TruncateCStoreTables(List *cstoreTableList)
+{
+	ListCell *relationCell = NULL;
+	foreach(relationCell, cstoreTableList)
+	{
+		RangeVar *rangeVar = (RangeVar *) lfirst(relationCell);
+		Oid relationId = RangeVarGetRelid(rangeVar, AccessShareLock, true);
+		Relation relation = NULL;
+		CStoreFdwOptions *cstoreFdwOptions = NULL;
+
+		Assert(CStoreTable(relationId));
+		relation = heap_open(relationId, AccessExclusiveLock);
+		cstoreFdwOptions = CStoreGetOptions(relationId);
+		DeleteCStoreTableFiles(cstoreFdwOptions->filename);
+		InitializeCStoreTableFile(relationId, relation);
+		heap_close(relation, AccessExclusiveLock);
+	}
+}
+
+
 /*
  * DeleteCStoreTableFiles deletes the data and footer files for a cstore table
  * whose data filename is given.
@@ -569,6 +612,29 @@ DeleteCStoreTableFiles(char *filename)
 						  errmsg("could not delete file \"%s\": %m",
 								 filename)));
 	}
+}
+
+
+/*
+ * InitializeCStoreTableFile creates data and footer file for a cstore table.
+ * The function assumes data and footer files do not exist, therefore
+ * it should be called on empty or non-existing table. Notice that the caller
+ * is expected to acquire AccessExclusiveLock on the relation.
+ */
+static void InitializeCStoreTableFile(Oid relationId, Relation relation)
+{
+	TableWriteState *writeState = NULL;
+	TupleDesc tupleDescriptor = RelationGetDescr(relation);
+	CStoreFdwOptions* cstoreFdwOptions = CStoreGetOptions(relationId);
+
+	/*
+	 * Initialize state to write to the cstore file. This creates an
+	 * empty data file and a valid footer file for the table.
+	 */
+	writeState = CStoreBeginWrite(cstoreFdwOptions->filename,
+			cstoreFdwOptions->compressionType, cstoreFdwOptions->stripeRowCount,
+			cstoreFdwOptions->blockRowCount, tupleDescriptor);
+	CStoreEndWrite(writeState);
 }
 
 
@@ -1139,14 +1205,20 @@ CStoreGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId
 	double totalCost  = startupCost + totalCpuCost + totalDiskAccessCost;
 
 	/* create a foreign path node and add it as the only possible path */
+#if PG_VERSION_NUM >= 90500
 	foreignScanPath = (Path *) create_foreignscan_path(root, baserel, baserel->rows,
 													   startupCost, totalCost,
 													   NIL,  /* no known ordering */
 													   NULL, /* not parameterized */
-#if PG_VERSION_NUM >= 90500
 													   NULL, /* no outer path */
-#endif
 													   NIL); /* no fdw_private */
+#else
+	foreignScanPath = (Path *) create_foreignscan_path(root, baserel, baserel->rows,
+													   startupCost, totalCost,
+													   NIL,  /* no known ordering */
+													   NULL, /* not parameterized */
+													   NIL); /* no fdw_private */
+#endif
 
 	add_path(baserel, foreignScanPath);
 	heap_close(relation, AccessShareLock);
@@ -1192,15 +1264,18 @@ CStoreGetForeignPlan(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId,
 	foreignPrivateList = list_make1(columnList);
 
 	/* create the foreign scan node */
+#if PG_VERSION_NUM >= 90500
 	foreignScan = make_foreignscan(targetList, scanClauses, baserel->relid,
 								   NIL, /* no expressions to evaluate */
-								   foreignPrivateList
-#if PG_VERSION_NUM >= 90500
-								   ,NIL,
+								   foreignPrivateList,
 								   NIL,
-								   NULL /* no outer path */
+								   NIL,
+								   NULL); /* no outer path */
+#else
+	foreignScan = make_foreignscan(targetList, scanClauses, baserel->relid,
+								   NIL, /* no expressions to evaluate */
+								   foreignPrivateList);
 #endif
-									);
 
 	return foreignScan;
 }
