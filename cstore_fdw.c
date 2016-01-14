@@ -1139,14 +1139,20 @@ CStoreGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId
 	double totalCost  = startupCost + totalCpuCost + totalDiskAccessCost;
 
 	/* create a foreign path node and add it as the only possible path */
+#if PG_VERSION_NUM >= 90500
 	foreignScanPath = (Path *) create_foreignscan_path(root, baserel, baserel->rows,
 													   startupCost, totalCost,
 													   NIL,  /* no known ordering */
 													   NULL, /* not parameterized */
-#if PG_VERSION_NUM >= 90500
 													   NULL, /* no outer path */
-#endif
 													   NIL); /* no fdw_private */
+#else
+	foreignScanPath = (Path *) create_foreignscan_path(root, baserel, baserel->rows,
+													   startupCost, totalCost,
+													   NIL,  /* no known ordering */
+													   NULL, /* not parameterized */
+													   NIL); /* no fdw_private */
+#endif
 
 	add_path(baserel, foreignScanPath);
 	heap_close(relation, AccessShareLock);
@@ -1192,15 +1198,18 @@ CStoreGetForeignPlan(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId,
 	foreignPrivateList = list_make1(columnList);
 
 	/* create the foreign scan node */
+#if PG_VERSION_NUM >= 90500
 	foreignScan = make_foreignscan(targetList, scanClauses, baserel->relid,
 								   NIL, /* no expressions to evaluate */
-								   foreignPrivateList
-#if PG_VERSION_NUM >= 90500
-								   ,NIL,
+								   foreignPrivateList,
 								   NIL,
-								   NULL /* no outer path */
+								   NIL,
+								   NULL); /* no outer path */
+#else
+	foreignScan = make_foreignscan(targetList, scanClauses, baserel->relid,
+								   NIL, /* no expressions to evaluate */
+								   foreignPrivateList);
 #endif
-									);
 
 	return foreignScan;
 }
