@@ -66,7 +66,10 @@ static uint64 CopyIntoCStoreTable(const CopyStmt *copyStatement,
 								  const char *queryString);
 static uint64 CopyOutCStoreTable(CopyStmt* copyStatement, const char* queryString);
 static List * DroppedCStoreFilenameList(DropStmt *dropStatement);
+static List * FindCStoreTables(List *tableList);
+static void TruncateCStoreTables(List *cstoreTableList);
 static void DeleteCStoreTableFiles(char *filename);
+static void InitializeCStoreTableFile(Oid relationId, Relation relation);
 static bool CStoreTable(Oid relationId);
 static void CreateCStoreDatabaseDirectory(Oid databaseOid);
 static bool DirectoryExists(StringInfo directoryName);
@@ -185,27 +188,9 @@ cstore_ddl_event_end_trigger(PG_FUNCTION_ARGS)
 
 		Oid relationId = RangeVarGetRelid(createStatement->base.relation,
 										  AccessShareLock, false);
-		if (CStoreTable(relationId))
-		{
-			TableWriteState *writeState = NULL;
-
-			Relation relation = heap_open(relationId, ExclusiveLock);
-			TupleDesc tupleDescriptor = RelationGetDescr(relation);
-			CStoreFdwOptions *cstoreFdwOptions = CStoreGetOptions(relationId);
-
-			/*
-			 * Initialize state to write to the cstore file. This creates an
-			 * empty data file and a valid footer file for the table.
-			 */
-			writeState = CStoreBeginWrite(cstoreFdwOptions->filename,
-										  cstoreFdwOptions->compressionType,
-										  cstoreFdwOptions->stripeRowCount,
-										  cstoreFdwOptions->blockRowCount,
-										  tupleDescriptor);
-			CStoreEndWrite(writeState);
-
-			heap_close(relation, ExclusiveLock);
-		}
+		Relation relation = heap_open(relationId, AccessExclusiveLock);
+		InitializeCStoreTableFile(relationId, relation);
+		heap_close(relation, AccessExclusiveLock);
 	}
 
 	PG_RETURN_NULL();
@@ -251,6 +236,22 @@ CStoreProcessUtility(Node *parseTree, const char *queryString,
 
 			DeleteCStoreTableFiles(fileName);
 		}
+
+	}
+	else if (nodeTag(parseTree) == T_TruncateStmt)
+	{
+		TruncateStmt *truncateStatement = (TruncateStmt *) parseTree;
+		List *allTablesList = truncateStatement->relations;
+		List *cstoreTablesList = FindCStoreTables(allTablesList);
+		List *otherTablesList = list_difference(allTablesList, cstoreTablesList);
+		if (otherTablesList != NIL)
+		{
+			truncateStatement->relations = otherTablesList;
+			CallPreviousProcessUtility(parseTree, queryString, context, paramListInfo,
+									   destReceiver, completionTag);
+		}
+
+		TruncateCStoreTables(cstoreTablesList);
 	}
 	/* handle other utility statements */
 	else
@@ -532,6 +533,45 @@ DroppedCStoreFilenameList(DropStmt *dropStatement)
 }
 
 
+/* FindCStoreTables returns list of CStore tables from given table list */
+static List *
+FindCStoreTables(List *tableList)
+{
+	List *cstoreTableList = NIL;
+	ListCell *relationCell = NULL;
+	foreach(relationCell, tableList)
+	{
+		RangeVar *rangeVar = (RangeVar *) lfirst(relationCell);
+		Oid relationId = RangeVarGetRelid(rangeVar, AccessShareLock, true);
+		if (CStoreTable(relationId))
+		{
+			cstoreTableList = lappend(cstoreTableList, rangeVar);
+		}
+	}
+
+	return cstoreTableList;
+}
+
+
+/* TruncateCStoreTable truncates given cstore tables */
+static void
+TruncateCStoreTables(List *cstoreTableList)
+{
+	ListCell *relationCell = NULL;
+	foreach(relationCell, cstoreTableList)
+	{
+		RangeVar *rangeVar = (RangeVar *) lfirst(relationCell);
+		Oid relationId = RangeVarGetRelid(rangeVar, AccessShareLock, true);
+		Assert(CStoreTable(relationId));
+		Relation relation = heap_open(relationId, AccessExclusiveLock);
+		CStoreFdwOptions *cstoreFdwOptions = CStoreGetOptions(relationId);
+		DeleteCStoreTableFiles(cstoreFdwOptions->filename);
+		InitializeCStoreTableFile(relationId, relation);
+		heap_close(relation, AccessExclusiveLock);
+	}
+}
+
+
 /*
  * DeleteCStoreTableFiles deletes the data and footer files for a cstore table
  * whose data filename is given.
@@ -562,6 +602,29 @@ DeleteCStoreTableFiles(char *filename)
 						  errmsg("could not delete file \"%s\": %m",
 								 filename)));
 	}
+}
+
+
+/*
+ * InitializeCStoreTableFile creates data and footer file for a cstore table.
+ * The function assumes data and footer files do not exist, therefore
+ * it should be called on empty or non-existing table. Notice that the caller
+ * is expected to acquire AccessExclusiveLock on the relation.
+ */
+static void InitializeCStoreTableFile(Oid relationId, Relation relation)
+{
+	TableWriteState *writeState = NULL;
+	TupleDesc tupleDescriptor = RelationGetDescr(relation);
+	CStoreFdwOptions* cstoreFdwOptions = CStoreGetOptions(relationId);
+
+	/*
+	 * Initialize state to write to the cstore file. This creates an
+	 * empty data file and a valid footer file for the table.
+	 */
+	writeState = CStoreBeginWrite(cstoreFdwOptions->filename,
+			cstoreFdwOptions->compressionType, cstoreFdwOptions->stripeRowCount,
+			cstoreFdwOptions->blockRowCount, tupleDescriptor);
+	CStoreEndWrite(writeState);
 }
 
 
