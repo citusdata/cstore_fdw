@@ -4,7 +4,7 @@
  *
  * Type and function declarations to serialize/deserialize cstore metadata.
  *
- * Copyright (c) 2015, Citus Data, Inc.
+ * Copyright (c) 2016, Citus Data, Inc.
  *
  * $Id$
  *

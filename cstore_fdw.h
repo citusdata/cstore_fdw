@@ -4,7 +4,7 @@
  *
  * Type and function declarations for CStore foreign data wrapper.
  *
- * Copyright (c) 2015, Citus Data, Inc.
+ * Copyright (c) 2016, Citus Data, Inc.
  *
  * $Id$
  *
@@ -47,7 +47,7 @@
 /* CStore file signature */
 #define CSTORE_MAGIC_NUMBER "citus_cstore"
 #define CSTORE_VERSION_MAJOR 1
-#define CSTORE_VERSION_MINOR 3
+#define CSTORE_VERSION_MINOR 4
 
 /* miscellaneous defines */
 #define CSTORE_FDW_NAME "cstore_fdw"
@@ -56,6 +56,7 @@
 #define CSTORE_TUPLE_COST_MULTIPLIER 10
 #define CSTORE_POSTSCRIPT_SIZE_LENGTH 1
 #define CSTORE_POSTSCRIPT_SIZE_MAX 256
+
 
 
 /*
@@ -293,7 +294,6 @@ typedef struct TableWriteState
 
 } TableWriteState;
 
-
 /* Function declarations for extension loading and unloading */
 extern void _PG_init(void);
 extern void _PG_fini(void);
@@ -335,6 +335,9 @@ extern ColumnBlockData ** CreateEmptyBlockDataArray(uint32 columnCount, bool *co
 extern void FreeColumnBlockDataArray(ColumnBlockData **blockDataArray,
 									 uint32 columnCount);
 extern uint64 CStoreTableRowCount(const char *filename);
+extern bool CompressBuffer(StringInfo inputBuffer, StringInfo outputBuffer,
+						   CompressionType compressionType);
+extern StringInfo DecompressBuffer(StringInfo buffer, CompressionType compressionType);
 
 
 #endif   /* CSTORE_FDW_H */ 
