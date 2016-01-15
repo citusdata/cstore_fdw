@@ -329,7 +329,7 @@ engage @ citusdata.com.
 
 [status]: https://travis-ci.org/citusdata/cstore_fdw
 [mailing-list]: https://groups.google.com/forum/#!forum/cstore-users
-[citus-cstore-docs]: http://citusdata.com/docs/foreign-data#cstore-wrapper
+[citus-cstore-docs]: https://www.citusdata.com/documentation/citusdb-documentation/
 [coverage]: https://coveralls.io/r/citusdata/cstore_fdw
 [copy-command]: http://www.postgresql.org/docs/current/static/sql-copy.html
 [analyze-command]: http://www.postgresql.org/docs/current/static/sql-analyze.html
