@@ -304,7 +304,7 @@ CopyCStoreTableStatement(CopyStmt* copyStatement)
 	if (copyStatement->relation != NULL)
 	{
 		Oid relationId = RangeVarGetRelid(copyStatement->relation,
-										  AccessShareLock, false);
+										  AccessShareLock, true);
 		copyCStoreTableStatement = CStoreTable(relationId);
 	}
 
