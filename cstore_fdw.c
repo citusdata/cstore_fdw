@@ -26,10 +26,12 @@
 #include "access/tuptoaster.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_foreign_table.h"
+#include "catalog/pg_namespace.h"
 #include "commands/copy.h"
 #include "commands/defrem.h"
 #include "commands/event_trigger.h"
 #include "commands/explain.h"
+#include "commands/extension.h"
 #include "commands/vacuum.h"
 #include "foreign/fdwapi.h"
 #include "foreign/foreign.h"
@@ -44,9 +46,11 @@
 #include "parser/parsetree.h"
 #include "tcop/utility.h"
 #include "utils/builtins.h"
+#include "utils/fmgroids.h"
 #include "utils/memutils.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
+#include "utils/tqual.h"
 
 
 /* local functions forward declarations */
@@ -71,6 +75,7 @@ static void TruncateCStoreTables(List *cstoreTableList);
 static void DeleteCStoreTableFiles(char *filename);
 static void InitializeCStoreTableFile(Oid relationId, Relation relation);
 static bool CStoreTable(Oid relationId);
+static bool DistributedTable(Oid relationId);
 static void CreateCStoreDatabaseDirectory(Oid databaseOid);
 static bool DirectoryExists(StringInfo directoryName);
 static void CreateDirectory(StringInfo directoryName);
@@ -305,7 +310,11 @@ CopyCStoreTableStatement(CopyStmt* copyStatement)
 	{
 		Oid relationId = RangeVarGetRelid(copyStatement->relation,
 										  AccessShareLock, true);
-		copyCStoreTableStatement = CStoreTable(relationId);
+		bool cstoreTable = CStoreTable(relationId);
+		if (cstoreTable)
+		{
+			copyCStoreTableStatement = !DistributedTable(relationId);
+		}
 	}
 
 	return copyCStoreTableStatement;
@@ -668,6 +677,55 @@ CStoreTable(Oid relationId)
 	}
 
 	return cstoreTable;
+}
+
+
+/*
+ * DistributedTable checks if the given relationId is the OID of a distributed table,
+ * which may also be a cstore_fdw table, but in that case COPY should be handled by
+ * Citus.
+ */
+static bool
+DistributedTable(Oid relationId)
+{
+	bool distributedTable = false;
+	Oid partitionOid = InvalidOid;
+	Relation heapRelation = NULL;
+	HeapScanDesc scanDesc = NULL;
+	const int scanKeyCount = 1;
+	ScanKeyData scanKey[scanKeyCount];
+	HeapTuple heapTuple = NULL;
+
+	bool missingOK = true;
+	Oid extensionOid = get_extension_oid(CITUS_EXTENSION_NAME, missingOK);
+	if (extensionOid == InvalidOid)
+	{
+		/* if the citus extension isn't created, no tables are distributed */
+		return false;
+	}
+
+	partitionOid = get_relname_relid(CITUS_PARTITION_TABLE_NAME, PG_CATALOG_NAMESPACE);
+	if (partitionOid == InvalidOid)
+	{
+		/* the pg_dist_partition table does not exist */
+		return false;
+	}
+
+	heapRelation = heap_open(partitionOid, AccessShareLock);
+
+	ScanKeyInit(&scanKey[0], ATTR_NUM_PARTITION_RELATION_ID, InvalidStrategy,
+				F_OIDEQ, ObjectIdGetDatum(relationId));
+
+	scanDesc = heap_beginscan(heapRelation, SnapshotSelf, scanKeyCount, scanKey);
+
+	heapTuple = heap_getnext(scanDesc, ForwardScanDirection);
+
+	distributedTable = HeapTupleIsValid(heapTuple);
+
+	heap_endscan(scanDesc);
+	relation_close(heapRelation, AccessShareLock);
+
+	return distributedTable;
 }
 
 
