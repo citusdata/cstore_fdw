@@ -76,6 +76,7 @@ static void DeleteCStoreTableFiles(char *filename);
 static void InitializeCStoreTableFile(Oid relationId, Relation relation);
 static bool CStoreTable(Oid relationId);
 static bool DistributedTable(Oid relationId);
+static bool DistributedWorkerCopy(CopyStmt *copyStatement);
 static void CreateCStoreDatabaseDirectory(Oid databaseOid);
 static bool DirectoryExists(StringInfo directoryName);
 static void CreateDirectory(StringInfo directoryName);
@@ -313,7 +314,18 @@ CopyCStoreTableStatement(CopyStmt* copyStatement)
 		bool cstoreTable = CStoreTable(relationId);
 		if (cstoreTable)
 		{
-			copyCStoreTableStatement = !DistributedTable(relationId);
+			bool distributedTable = DistributedTable(relationId);
+			bool distributedCopy = DistributedWorkerCopy(copyStatement);
+
+			if (distributedTable || distributedCopy)
+			{
+				/* let COPY on distributed tables fall through to Citus */
+				copyCStoreTableStatement = false;
+			}
+			else
+			{
+				copyCStoreTableStatement = true;
+			}
 		}
 	}
 
@@ -726,6 +738,27 @@ DistributedTable(Oid relationId)
 	relation_close(heapRelation, AccessShareLock);
 
 	return distributedTable;
+}
+
+
+/*
+ * DistributedWorkerCopy returns whether the Citus-specific master_host option is
+ * present in the COPY options.
+ */
+static bool
+DistributedWorkerCopy(CopyStmt *copyStatement)
+{
+    ListCell *optionCell = NULL;
+    foreach(optionCell, copyStatement->options)
+    {
+        DefElem *defel = (DefElem *) lfirst(optionCell);
+        if (strncmp(defel->defname, "master_host", NAMEDATALEN) == 0)
+        {
+            return true;
+        }
+    }
+
+    return false;
 }
 
 
