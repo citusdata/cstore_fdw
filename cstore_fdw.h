@@ -57,6 +57,14 @@
 #define CSTORE_POSTSCRIPT_SIZE_LENGTH 1
 #define CSTORE_POSTSCRIPT_SIZE_MAX 256
 
+/* table containing information about how to partition distributed tables */
+#define CITUS_EXTENSION_NAME "citus"
+#define CITUS_PARTITION_TABLE_NAME "pg_dist_partition"
+
+/* human-readable names for addressing columns of the pg_dist_partition table */
+#define ATTR_NUM_PARTITION_RELATION_ID 1
+#define ATTR_NUM_PARTITION_TYPE 2
+#define ATTR_NUM_PARTITION_KEY 3
 
 
 /*
