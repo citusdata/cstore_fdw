@@ -115,13 +115,13 @@ most efficient execution plan for each query.
 commands. We also don't support single row inserts.
 
 
-Updating from earlier versions to 1.4
+Updating from earlier versions to 1.5
 --------------------------------------
 
-To update your existing cstore_fdw installation from earlier versions 1.4 
+To update your existing cstore_fdw installation from earlier versions 1.5 
 you can take the following steps:
 
-* Download and install cstore_fdw version 1.4 using instructions from the "Building"
+* Download and install cstore_fdw version 1.5 using instructions from the "Building"
   section,
 * Restart the PostgreSQL server,
 * Run the ```ALTER EXTENSION cstore_fdw UPDATE;``` command.
@@ -219,17 +219,19 @@ ORDER BY
 ```
 
 
-Usage with CitusDB
+Usage with Citus
 --------------------
 
 The example above illustrated how to load data into a PostgreSQL database running
 on a single host. However, sometimes your data is too large to analyze effectively
-on a single host. CitusDB is a product built by Citus Data that allows you to run
-a distributed PostgreSQL database to analyze your data using the power of multiple
-hosts. CitusDB is based on a modern PostgreSQL version and allows you to easily
-install PostgreSQL extensions and foreign data wrappers, including cstore_fdw. For
-an example of how to use cstore\_fdw with CitusDB see the
-[CitusDB documentation][citus-cstore-docs].
+on a single host. Citus is a PostgreSQL extension built by Citus Data that allows you
+to run a distributed PostgreSQL database to analyze your data using the power of multiple
+hosts. You can easily install and run other PostgreSQL extensions and foreign data
+wrappers, including cstore_fdw side by side with Citus.
+
+You can create a cstore_fdw table and distribute it using UDF 
+```master_create_distributed_table()```  just like any other table. You can load data
+using ```copy``` command as you would do in single node PostgreSQL. 
 
 
 Using Skip Indexes
@@ -283,6 +285,9 @@ the installation:
 
 Changeset
 ---------
+### Version 1.5
+* (Compatibility) Added a compatibility fix with Citus 
+
 ### Version 1.4
 
 * (Feature) Added support for ```TRUNCATE TABLE```
