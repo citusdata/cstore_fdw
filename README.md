@@ -50,12 +50,12 @@ So we need to install these packages first:
     # Mac OS X
     brew install protobuf-c
 
-**Note.** In CentOS 5,6 and 7, you may need to install or update EPEL 5,6 or 7 repositories.
+**Note.** In CentOS 5, 6, and 7, you may need to install or update EPEL 5, 6, or 7 repositories.
  See [this page]
 (https://support.rackspace.com/how-to/install-epel-and-additional-repositories-on-centos-and-red-hat/)
 for instructions.
 
-**Note.** In Amazon Linux, EPEL repository is installed by default, but it is not
+**Note.** In Amazon Linux, the EPEL repository is installed by default, but not
 enabled. See [these instructions](http://aws.amazon.com/amazon-linux-ami/faqs/#epel)
 for how to enable it.
 
@@ -118,13 +118,13 @@ commands. We also don't support single row inserts.
 Updating from earlier versions to 1.4.1
 ---------------------------------------
 
-To update your existing cstore_fdw installation from earlier versions then 1.4.1
+To update an existing cstore_fdw installation from versions earlier than 1.4.1
 you can take the following steps:
 
 * Download and install cstore_fdw version 1.4.1 using instructions from the "Building"
   section,
 * Restart the PostgreSQL server,
-* Run the ```ALTER EXTENSION cstore_fdw UPDATE;```
+* Run ```ALTER EXTENSION cstore_fdw UPDATE;```
 
 
 Example
@@ -227,11 +227,11 @@ on a single host. However, sometimes your data is too large to analyze effective
 on a single host. Citus is a product built by Citus Data that allows you to run
 a distributed PostgreSQL database to analyze your data using the power of multiple
 hosts.  You can easily install and run other PostgreSQL extensions and foreign data
-wrappers, including cstore_fdw side by with Citus.
+wrappers—including cstore_fdw—alongside Citus.
 
-You can create a cstore_fdw table and distribute it using UDF 
-```master_create_distributed_table()``` just like any other table. You can load data 
-using ```copy``` command as you would do in single node PostgreSQL.
+You can create a cstore_fdw table and distribute it using the
+```master_create_distributed_table()``` UDF just like any other table. You can load data
+using the ```copy``` command as you would do in single node PostgreSQL.
 
 Using Skip Indexes
 ------------------
