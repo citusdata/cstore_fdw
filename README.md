@@ -50,12 +50,12 @@ So we need to install these packages first:
     # Mac OS X
     brew install protobuf-c
 
-**Note.** In CentOS 5 and 6, you may need to install or update EPEL 5 or EPEL 6
-repositories. See [this page]
-(http://www.rackspace.com/knowledge_center/article/installing-rhel-epel-repo-on-centos-5x-or-6x)
+**Note.** In CentOS 5,6 and 7, you may need to install or update EPEL 5,6 or 7 repositories.
+ See [this page]
+(https://support.rackspace.com/how-to/install-epel-and-additional-repositories-on-centos-and-red-hat/)
 for instructions.
 
-**Note.** In Amazon Linux, EPEL 6 repository is installed by default, but it is not
+**Note.** In Amazon Linux, EPEL repository is installed by default, but it is not
 enabled. See [these instructions](http://aws.amazon.com/amazon-linux-ami/faqs/#epel)
 for how to enable it.
 
@@ -115,16 +115,16 @@ most efficient execution plan for each query.
 commands. We also don't support single row inserts.
 
 
-Updating from earlier versions to 1.4
---------------------------------------
+Updating from earlier versions to 1.4.1
+---------------------------------------
 
-To update your existing cstore_fdw installation from earlier versions 1.4 
+To update your existing cstore_fdw installation from earlier versions then 1.4.1
 you can take the following steps:
 
-* Download and install cstore_fdw version 1.4 using instructions from the "Building"
+* Download and install cstore_fdw version 1.4.1 using instructions from the "Building"
   section,
 * Restart the PostgreSQL server,
-* Run the ```ALTER EXTENSION cstore_fdw UPDATE;``` command.
+* Run the ```ALTER EXTENSION cstore_fdw UPDATE;```
 
 
 Example
@@ -219,18 +219,19 @@ ORDER BY
 ```
 
 
-Usage with CitusDB
---------------------
+Usage with Citus
+----------------
 
 The example above illustrated how to load data into a PostgreSQL database running
 on a single host. However, sometimes your data is too large to analyze effectively
-on a single host. CitusDB is a product built by Citus Data that allows you to run
+on a single host. Citus is a product built by Citus Data that allows you to run
 a distributed PostgreSQL database to analyze your data using the power of multiple
-hosts. CitusDB is based on a modern PostgreSQL version and allows you to easily
-install PostgreSQL extensions and foreign data wrappers, including cstore_fdw. For
-an example of how to use cstore\_fdw with CitusDB see the
-[CitusDB documentation][citus-cstore-docs].
+hosts.  You can easily install and run other PostgreSQL extensions and foreign data
+wrappers, including cstore_fdw side by with Citus.
 
+You can create a cstore_fdw table and distribute it using UDF 
+```master_create_distributed_table()``` just like any other table. You can load data 
+using ```copy``` command as you would do in single node PostgreSQL.
 
 Using Skip Indexes
 ------------------
@@ -283,6 +284,10 @@ the installation:
 
 Changeset
 ---------
+### Version 1.4.1
+
+* (Fix) Compatibility fix for Citus [copy command][copy-command].
+
 ### Version 1.4
 
 * (Feature) Added support for ```TRUNCATE TABLE```
@@ -329,7 +334,6 @@ engage @ citusdata.com.
 
 [status]: https://travis-ci.org/citusdata/cstore_fdw
 [mailing-list]: https://groups.google.com/forum/#!forum/cstore-users
-[citus-cstore-docs]: https://www.citusdata.com/documentation/citusdb-documentation/
 [coverage]: https://coveralls.io/r/citusdata/cstore_fdw
 [copy-command]: http://www.postgresql.org/docs/current/static/sql-copy.html
 [analyze-command]: http://www.postgresql.org/docs/current/static/sql-analyze.html
