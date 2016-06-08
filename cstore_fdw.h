@@ -16,6 +16,7 @@
 
 #include "access/tupdesc.h"
 #include "fmgr.h"
+#include "catalog/pg_am.h"
 #include "catalog/pg_foreign_server.h"
 #include "catalog/pg_foreign_table.h"
 #include "lib/stringinfo.h"

@@ -1296,7 +1296,17 @@ CStoreGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId
 	double totalCost  = startupCost + totalCpuCost + totalDiskAccessCost;
 
 	/* create a foreign path node and add it as the only possible path */
-#if PG_VERSION_NUM >= 90500
+#if PG_VERSION_NUM >= 90600
+	foreignScanPath = (Path *) create_foreignscan_path(root, baserel,
+													   NULL, /* path target */
+													   baserel->rows,
+													   startupCost, totalCost,
+													   NIL,  /* no known ordering */
+													   NULL, /* not parameterized */
+													   NULL, /* no outer path */
+													   NIL); /* no fdw_private */
+
+#elif PG_VERSION_NUM >= 90500
 	foreignScanPath = (Path *) create_foreignscan_path(root, baserel, baserel->rows,
 													   startupCost, totalCost,
 													   NIL,  /* no known ordering */
@@ -1440,7 +1450,11 @@ ColumnList(RelOptInfo *baserel, Oid foreignTableId)
 	List *neededColumnList = NIL;
 	AttrNumber columnIndex = 1;
 	AttrNumber columnCount = baserel->max_attr;
+#if PG_VERSION_NUM >= 90600
+	List *targetColumnList = baserel->reltarget->exprs;
+#else
 	List *targetColumnList = baserel->reltargetlist;
+#endif
 	List *restrictInfoList = baserel->baserestrictinfo;
 	ListCell *restrictInfoCell = NULL;
 	const AttrNumber wholeRow = 0;
@@ -1459,9 +1473,15 @@ ColumnList(RelOptInfo *baserel, Oid foreignTableId)
 		List *clauseColumnList = NIL;
 
 		/* recursively pull up any columns used in the restriction clause */
+#if PG_VERSION_NUM >= 90600
+		clauseColumnList = pull_var_clause(restrictClause,
+										   PVC_RECURSE_AGGREGATES |
+										   PVC_RECURSE_PLACEHOLDERS);
+#else
 		clauseColumnList = pull_var_clause(restrictClause,
 										   PVC_RECURSE_AGGREGATES,
 										   PVC_RECURSE_PLACEHOLDERS);
+#endif
 
 		neededColumnList = list_union(neededColumnList, clauseColumnList);
 	}
