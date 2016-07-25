@@ -15,6 +15,18 @@ SELECT count(*) FROM (
 -- DROP cstore_fdw tables
 DROP FOREIGN TABLE contestant;
 DROP FOREIGN TABLE contestant_compressed;
+-- test drop within schema
+CREATE SCHEMA test_schema;
+CREATE FOREIGN TABLE test_schema.first_table(a int, b int) SERVER cstore_server;
+CREATE FOREIGN TABLE test_schema.second_table(a int, b int) SERVER cstore_server;
+DROP FOREIGN TABLE test_schema.first_table;
+-- schema drop will be rejected due to existing table
+DROP SCHEMA test_schema;
+ERROR:  cannot drop schema test_schema because other objects depend on it
+DETAIL:  foreign table test_schema.second_table depends on schema test_schema
+HINT:  Use DROP ... CASCADE to drop the dependent objects too.
+DROP SCHEMA test_schema CASCADE;
+NOTICE:  drop cascades to foreign table test_schema.second_table
 -- Check that the files have been deleted and the directory is empty after the
 -- DROP table command.
 SELECT count(*) FROM (

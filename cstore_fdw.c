@@ -25,6 +25,7 @@
 #include "access/sysattr.h"
 #include "access/tuptoaster.h"
 #include "catalog/namespace.h"
+#include "catalog/objectaccess.h"
 #include "catalog/pg_foreign_table.h"
 #include "catalog/pg_namespace.h"
 #include "commands/copy.h"
@@ -54,6 +55,11 @@
 
 
 /* local functions forward declarations */
+static void CStoreObjectAccessHook(ObjectAccessType access,
+													 Oid classId,
+													 Oid objectId,
+													 int subId,
+													 void *arg);
 static void CStoreProcessUtility(Node *parseTree, const char *queryString,
 								 ProcessUtilityContext context,
 								 ParamListInfo paramListInfo,
@@ -69,7 +75,6 @@ static void CStoreProcessCopyCommand(CopyStmt *copyStatement, const char *queryS
 static uint64 CopyIntoCStoreTable(const CopyStmt *copyStatement,
 								  const char *queryString);
 static uint64 CopyOutCStoreTable(CopyStmt* copyStatement, const char* queryString);
-static List * DroppedCStoreFilenameList(DropStmt *dropStatement);
 static List * FindCStoreTables(List *tableList);
 static void TruncateCStoreTables(List *cstoreTableList);
 static void DeleteCStoreTableFiles(char *filename);
@@ -140,6 +145,11 @@ PG_FUNCTION_INFO_V1(cstore_fdw_validator);
 
 /* saved hook value in case of unload */
 static ProcessUtility_hook_type PreviousProcessUtilityHook = NULL;
+static object_access_hook_type PreviousObjectAccessHook = NULL;
+
+
+/* static variables */
+static List *droppedCStoreFileList = NIL;
 
 
 /*
@@ -151,6 +161,9 @@ void _PG_init(void)
 {
 	PreviousProcessUtilityHook = ProcessUtility_hook;
 	ProcessUtility_hook = CStoreProcessUtility;
+
+	PreviousObjectAccessHook = object_access_hook;
+	object_access_hook = CStoreObjectAccessHook;;
 }
 
 
@@ -160,6 +173,7 @@ void _PG_init(void)
  */
 void _PG_fini(void)
 {
+	object_access_hook = PreviousObjectAccessHook;
 	ProcessUtility_hook = PreviousProcessUtilityHook;
 }
 
@@ -211,6 +225,48 @@ cstore_ddl_event_end_trigger(PG_FUNCTION_ARGS)
 
 
 /*
+ * CStoreObjectAccessHook listens to object access events and extracts dropped
+ * cstore table information. This hook is called during standard process
+ * utility while processing DROP statements. The function records dropped
+ * tables' data paths into a static list droppedCStoreFileList. This list is
+ * initialized to NIL by CStoreProcessUtility before call to standard process
+ * utility. It is expected to be NIL at all times except during processing of
+ * DROP statements.
+ */
+static void CStoreObjectAccessHook(ObjectAccessType access,
+								   Oid classId,
+								   Oid objectId,
+								   int subId,
+								   void *arg)
+{
+	/*
+	 * Detect if this is a drop event on cstore table. Notice that this hook
+	 * is also called during alter table for dropping attributes. We
+	 * distinguish relation drop by checking subId field. It is drop of the
+	 * relation if subId is 0, any positive number indicates dropping of an
+	 * attribute at specified index.
+	 */
+	if (access == OAT_DROP && classId == RelationRelationId && subId == 0)
+	{
+		bool cstoreTable = CStoreTable(objectId);
+
+		if (cstoreTable)
+		{
+			CStoreFdwOptions *cstoreFdwOptions = CStoreGetOptions(objectId);
+			droppedCStoreFileList = lappend(droppedCStoreFileList,
+											cstoreFdwOptions->filename);
+		}
+	}
+
+	/* call previously registered hook if any */
+	if (PreviousObjectAccessHook != NULL)
+	{
+		PreviousObjectAccessHook(access, classId, objectId, subId, arg);
+	}
+}
+
+
+/*
  * CStoreProcessUtility is the hook for handling utility commands. This function
  * customizes the behaviour of "COPY cstore_table" and "DROP FOREIGN TABLE
  * cstore_table" commands. For all other utility statements, the function calls
@@ -238,18 +294,20 @@ CStoreProcessUtility(Node *parseTree, const char *queryString,
 	else if (nodeTag(parseTree) == T_DropStmt)
 	{
 		ListCell *fileListCell = NULL;
-		List *droppedTables = DroppedCStoreFilenameList((DropStmt*) parseTree);
+		
+		droppedCStoreFileList = NIL;
 
 		CallPreviousProcessUtility(parseTree, queryString, context,
 								   paramListInfo, destReceiver, completionTag);
 
-		foreach(fileListCell, droppedTables)
+		foreach(fileListCell, droppedCStoreFileList)
 		{
 			char *fileName = lfirst(fileListCell);
 
 			DeleteCStoreTableFiles(fileName);
 		}
 
+		droppedCStoreFileList = NIL;
 	}
 	else if (nodeTag(parseTree) == T_TruncateStmt)
 	{
@@ -527,37 +585,6 @@ CopyOutCStoreTable(CopyStmt* copyStatement, const char* queryString)
 	DoCopy(copyStatement, queryString, &processedCount);
 
 	return processedCount;
-}
-
-
-/*
- * DropppedCStoreFilenameList extracts and returns the list of cstore file names
- * from DROP table statement
- */
-static List *
-DroppedCStoreFilenameList(DropStmt *dropStatement)
-{
-	List *droppedCStoreFileList = NIL;
-
-	if (dropStatement->removeType == OBJECT_FOREIGN_TABLE)
-	{
-		ListCell *dropObjectCell = NULL;
-		foreach(dropObjectCell, dropStatement->objects)
-		{
-			List *tableNameList = (List *) lfirst(dropObjectCell);
-			RangeVar *rangeVar = makeRangeVarFromNameList(tableNameList);
-
-			Oid relationId = RangeVarGetRelid(rangeVar, AccessShareLock, true);
-			if (CStoreTable(relationId))
-			{
-				CStoreFdwOptions *cstoreFdwOptions = CStoreGetOptions(relationId);
-				droppedCStoreFileList = lappend(droppedCStoreFileList,
-												cstoreFdwOptions->filename);
-			}
-		}
-	}
-
-	return droppedCStoreFileList;
 }
 
 
