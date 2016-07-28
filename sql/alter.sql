@@ -65,4 +65,19 @@ ALTER FOREIGN TABLE test_alter_table ALTER COLUMN h DROP DEFAULT;
 ANALYZE test_alter_table;
 SELECT * FROM test_alter_table;
 
+-- unsupported type change
+ALTER FOREIGN TABLE test_alter_table ADD COLUMN i int;
+ALTER FOREIGN TABLE test_alter_table ADD COLUMN j float;
+ALTER FOREIGN TABLE test_alter_table ADD COLUMN k text;
+
+-- this is valid type change
+ALTER FOREIGN TABLE test_alter_table ALTER COLUMN i TYPE float;
+
+-- this is not valid
+ALTER FOREIGN TABLE test_alter_table ALTER COLUMN j TYPE int;
+
+-- text / varchar conversion is valid both ways
+ALTER FOREIGN TABLE test_alter_table ALTER COLUMN k TYPE varchar(20);
+ALTER FOREIGN TABLE test_alter_table ALTER COLUMN k TYPE text;
+
 DROP FOREIGN TABLE test_alter_table;
