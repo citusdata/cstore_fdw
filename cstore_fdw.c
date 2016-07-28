@@ -44,6 +44,8 @@
 #include "optimizer/var.h"
 #include "parser/parser.h"
 #include "parser/parsetree.h"
+#include "parser/parse_coerce.h"
+#include "parser/parse_type.h"
 #include "tcop/utility.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
@@ -69,6 +71,7 @@ static void CStoreProcessCopyCommand(CopyStmt *copyStatement, const char *queryS
 static uint64 CopyIntoCStoreTable(const CopyStmt *copyStatement,
 								  const char *queryString);
 static uint64 CopyOutCStoreTable(CopyStmt* copyStatement, const char* queryString);
+static void CStoreProcessAlterTableCommand(AlterTableStmt *alterStatement);
 static List * DroppedCStoreFilenameList(DropStmt *dropStatement);
 static List * FindCStoreTables(List *tableList);
 static void TruncateCStoreTables(List *cstoreTableList);
@@ -265,6 +268,13 @@ CStoreProcessUtility(Node *parseTree, const char *queryString,
 		}
 
 		TruncateCStoreTables(cstoreTablesList);
+	}
+	else if (nodeTag(parseTree) == T_AlterTableStmt)
+	{
+		AlterTableStmt *alterTable = (AlterTableStmt *) parseTree;
+		CStoreProcessAlterTableCommand(alterTable);
+		CallPreviousProcessUtility(parseTree, queryString, context,
+								   paramListInfo, destReceiver, completionTag);
 	}
 	/* handle other utility statements */
 	else
@@ -527,6 +537,68 @@ CopyOutCStoreTable(CopyStmt* copyStatement, const char* queryString)
 	DoCopy(copyStatement, queryString, &processedCount);
 
 	return processedCount;
+}
+
+
+/*
+ * CStoreProcessAlterTableCommand checks if given alter table statement is
+ * compatible with underlying data structure. Currently it only checks alter
+ * column type. The function errors out if current column type can not be safely
+ * converted to requested column type. This check is more restrictive than
+ * PostgreSQL's because we can not change existing data.
+ */
+static void
+CStoreProcessAlterTableCommand(AlterTableStmt *alterStatement)
+{
+	ObjectType objectType = alterStatement->relkind;
+	RangeVar *relationRangeVar = alterStatement->relation;
+	Oid relationId = InvalidOid;
+	List *commandList = alterStatement->cmds;
+	ListCell *commandCell = NULL;
+
+	/* we are only interested in foreign table changes */
+	if (objectType != OBJECT_TABLE && objectType != OBJECT_FOREIGN_TABLE)
+	{
+		return;
+	}
+
+	relationId = RangeVarGetRelid(relationRangeVar, AccessShareLock, true);
+	if (!CStoreTable(relationId))
+	{
+		return;
+	}
+
+	foreach(commandCell, commandList)
+	{
+		AlterTableCmd *alterCommand = (AlterTableCmd *) lfirst(commandCell);
+		if(alterCommand->subtype == AT_AlterColumnType)
+		{
+			char *columnName = alterCommand->name;
+			ColumnDef *columnDef = (ColumnDef *) alterCommand->def;
+			Oid targetTypeId = typenameTypeId(NULL, columnDef->typeName);;
+			char *typeName = TypeNameToString(columnDef->typeName);
+			AttrNumber attributeNumber = get_attnum(relationId, columnName);
+			Oid currentTypeId = InvalidOid;
+
+			if (attributeNumber <= 0)
+			{
+				/* let standard utility handle this */
+				continue;
+			}
+
+			currentTypeId = get_atttype(relationId, attributeNumber);
+
+			/*
+			 * We are only interested in implicit coersion type compatibility.
+			 * Erroring out here to prevent further processing.
+			 */
+			if (!can_coerce_type(1, &currentTypeId, &targetTypeId, COERCION_IMPLICIT))
+			{
+				ereport(ERROR, (errmsg("Column %s cannot be cast automatically to "
+									   "type %s", columnName, typeName)));
+			}
+		}
+	}
 }
 
 
@@ -1296,7 +1368,17 @@ CStoreGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId
 	double totalCost  = startupCost + totalCpuCost + totalDiskAccessCost;
 
 	/* create a foreign path node and add it as the only possible path */
-#if PG_VERSION_NUM >= 90500
+#if PG_VERSION_NUM >= 90600
+	foreignScanPath = (Path *) create_foreignscan_path(root, baserel,
+													   NULL, /* path target */
+													   baserel->rows,
+													   startupCost, totalCost,
+													   NIL,  /* no known ordering */
+													   NULL, /* not parameterized */
+													   NULL, /* no outer path */
+													   NIL); /* no fdw_private */
+
+#elif PG_VERSION_NUM >= 90500
 	foreignScanPath = (Path *) create_foreignscan_path(root, baserel, baserel->rows,
 													   startupCost, totalCost,
 													   NIL,  /* no known ordering */
@@ -1440,7 +1522,11 @@ ColumnList(RelOptInfo *baserel, Oid foreignTableId)
 	List *neededColumnList = NIL;
 	AttrNumber columnIndex = 1;
 	AttrNumber columnCount = baserel->max_attr;
+#if PG_VERSION_NUM >= 90600
+	List *targetColumnList = baserel->reltarget->exprs;
+#else
 	List *targetColumnList = baserel->reltargetlist;
+#endif
 	List *restrictInfoList = baserel->baserestrictinfo;
 	ListCell *restrictInfoCell = NULL;
 	const AttrNumber wholeRow = 0;
@@ -1459,9 +1545,15 @@ ColumnList(RelOptInfo *baserel, Oid foreignTableId)
 		List *clauseColumnList = NIL;
 
 		/* recursively pull up any columns used in the restriction clause */
+#if PG_VERSION_NUM >= 90600
+		clauseColumnList = pull_var_clause(restrictClause,
+										   PVC_RECURSE_AGGREGATES |
+										   PVC_RECURSE_PLACEHOLDERS);
+#else
 		clauseColumnList = pull_var_clause(restrictClause,
 										   PVC_RECURSE_AGGREGATES,
 										   PVC_RECURSE_PLACEHOLDERS);
+#endif
 
 		neededColumnList = list_union(neededColumnList, clauseColumnList);
 	}
