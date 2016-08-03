@@ -11,7 +11,7 @@ env:
 before_install:
   - sudo apt-get update -qq
   - sudo update-alternatives --remove-all postmaster.1.gz
-  - git clone --depth 1 https://github.com/citusdata/tools.git
+  - git clone -b v0.3.3 --depth 1 https://github.com/citusdata/tools.git
   - tools/travis/nuke_pg.sh
 install:
   - sudo apt-get install protobuf-c-compiler
