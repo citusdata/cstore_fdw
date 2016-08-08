@@ -13,6 +13,18 @@ SELECT count(*) FROM (
 DROP FOREIGN TABLE contestant;
 DROP FOREIGN TABLE contestant_compressed;
 
+-- test drop within schema
+CREATE SCHEMA test_schema;
+CREATE FOREIGN TABLE test_schema.first_table(a int, b int) SERVER cstore_server;
+CREATE FOREIGN TABLE test_schema.second_table(a int, b int) SERVER cstore_server;
+
+DROP FOREIGN TABLE test_schema.first_table;
+
+-- schema drop will be rejected due to existing table
+DROP SCHEMA test_schema;
+
+DROP SCHEMA test_schema CASCADE;
+
 -- Check that the files have been deleted and the directory is empty after the
 -- DROP table command.
 SELECT count(*) FROM (
