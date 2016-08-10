@@ -571,7 +571,7 @@ FindCStoreTables(List *tableList)
 	{
 		RangeVar *rangeVar = (RangeVar *) lfirst(relationCell);
 		Oid relationId = RangeVarGetRelid(rangeVar, AccessShareLock, true);
-		if (CStoreTable(relationId))
+		if (CStoreTable(relationId) && !DistributedTable(relationId))
 		{
 			cstoreTableList = lappend(cstoreTableList, rangeVar);
 		}
