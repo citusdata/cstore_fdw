@@ -1513,7 +1513,8 @@ PageCount(const char *filename)
  * ColumnList takes in the planner's information about this foreign table. The
  * function then finds all columns needed for query execution, including those
  * used in projections, joins, and filter clauses, de-duplicates these columns,
- * and returns them in a new list. This function is unchanged from mongo_fdw.
+ * and returns them in a new list. This function is taken from mongo_fdw with
+ * slight modifications.
  */
 static List *
 ColumnList(RelOptInfo *baserel, Oid foreignTableId)
@@ -1527,6 +1528,7 @@ ColumnList(RelOptInfo *baserel, Oid foreignTableId)
 #else
 	List *targetColumnList = baserel->reltargetlist;
 #endif
+	ListCell *targetColumnCell = NULL;
 	List *restrictInfoList = baserel->baserestrictinfo;
 	ListCell *restrictInfoCell = NULL;
 	const AttrNumber wholeRow = 0;
@@ -1535,7 +1537,23 @@ ColumnList(RelOptInfo *baserel, Oid foreignTableId)
 	Form_pg_attribute *attributeFormArray = tupleDescriptor->attrs;
 
 	/* first add the columns used in joins and projections */
-	neededColumnList = list_copy(targetColumnList);
+	foreach(targetColumnCell, targetColumnList)
+	{
+		List *targetVarList = NIL;
+		Node *targetExpr = (Node *) lfirst(targetColumnCell);
+
+#if PG_VERSION_NUM >= 90600
+		targetVarList = pull_var_clause(targetExpr,
+										PVC_RECURSE_AGGREGATES |
+										PVC_RECURSE_PLACEHOLDERS);
+#else
+		targetVarList = pull_var_clause(targetExpr,
+										PVC_RECURSE_AGGREGATES,
+										PVC_RECURSE_PLACEHOLDERS);
+#endif
+
+		neededColumnList = list_union(neededColumnList, targetVarList);
+	}
 
 	/* then walk over all restriction clauses, and pull up any used columns */
 	foreach(restrictInfoCell, restrictInfoList)

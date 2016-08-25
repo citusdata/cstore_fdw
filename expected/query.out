@@ -82,3 +82,24 @@ SELECT to_json(v) FROM contestant v ORDER BY rating LIMIT 1;
  {"handle":"g","birthdate":"1991-12-13","rating":1803,"percentile":85.1,"country":"XD ","achievements":["a","c"]}
 (1 row)
 
+-- Test variables used in expressions
+CREATE FOREIGN TABLE union_first (a int, b int) SERVER cstore_server;
+CREATE FOREIGN TABLE union_second (a int, b int) SERVER cstore_server;
+INSERT INTO union_first SELECT a, a FROM generate_series(1, 5) a;
+INSERT INTO union_second SELECT a, a FROM generate_series(11, 15) a;
+(SELECT a*1, b FROM union_first) union all (SELECT a*1, b FROM union_second);
+ ?column? | b  
+----------+----
+        1 |  1
+        2 |  2
+        3 |  3
+        4 |  4
+        5 |  5
+       11 | 11
+       12 | 12
+       13 | 13
+       14 | 14
+       15 | 15
+(10 rows)
+
+DROP FOREIGN TABLE union_first, union_second;
