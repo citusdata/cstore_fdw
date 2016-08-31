@@ -15,6 +15,11 @@ SELECT count(*) FROM (
 -- DROP cstore_fdw tables
 DROP FOREIGN TABLE contestant;
 DROP FOREIGN TABLE contestant_compressed;
+-- Create a cstore_fdw table under a schema and drop it.
+CREATE SCHEMA test_schema;
+CREATE FOREIGN TABLE test_schema.test_table(data int) SERVER cstore_server;
+DROP SCHEMA test_schema CASCADE;
+NOTICE:  drop cascades to foreign table test_schema.test_table
 -- Check that the files have been deleted and the directory is empty after the
 -- DROP table command.
 SELECT count(*) FROM (
