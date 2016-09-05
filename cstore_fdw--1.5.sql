@@ -31,7 +31,7 @@ RETURNS bigint
 AS 'MODULE_PATHNAME'
 LANGUAGE C STRICT;
 
-CREATE FUNCTION cstore_clean_table_resources(oid)
+CREATE OR REPLACE FUNCTION cstore_clean_table_resources(oid)
 RETURNS void
 AS 'MODULE_PATHNAME'
 LANGUAGE C STRICT;
