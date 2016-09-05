@@ -1,4 +1,4 @@
-/* cstore_fdw/cstore_fdw--1.4.sql */
+/* cstore_fdw/cstore_fdw--1.5.sql */
 
 -- complain if script is sourced in psql, rather than via CREATE EXTENSION
 \echo Use "CREATE EXTENSION cstore_fdw" to load this file. \quit
@@ -31,7 +31,7 @@ RETURNS bigint
 AS 'MODULE_PATHNAME'
 LANGUAGE C STRICT;
 
-CREATE FUNCTION cstore_clean_table_resources(oid)
+CREATE OR REPLACE FUNCTION cstore_clean_table_resources(oid)
 RETURNS void
 AS 'MODULE_PATHNAME'
 LANGUAGE C STRICT;
