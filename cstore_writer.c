@@ -422,23 +422,14 @@ CreateEmptyStripeBuffers(uint32 stripeMaxRowCount, uint32 blockRowCount,
 	StripeBuffers *stripeBuffers = NULL;
 	uint32 columnIndex = 0;
 	uint32 maxBlockCount = (stripeMaxRowCount / blockRowCount) + 1;
-
 	ColumnBuffers **columnBuffersArray = palloc0(columnCount * sizeof(ColumnBuffers *));
-	ColumnBlockData **blockDataArray = palloc0(columnCount * sizeof(ColumnBlockData*));
 
 	for (columnIndex = 0; columnIndex < columnCount; columnIndex++)
 	{
 		uint32 blockIndex = 0;
-		ColumnBlockBuffers **blockBuffersArray = NULL;
-		ColumnBlockData *blockData = palloc0(sizeof(ColumnBlockData));
-		bool *existsArray = palloc0(blockRowCount * sizeof(bool));
-		Datum *valueArray = palloc0(blockRowCount * sizeof(Datum));
+		ColumnBlockBuffers **blockBuffersArray =
+			palloc0(maxBlockCount * sizeof(ColumnBlockBuffers *));
 
-		blockData->existsArray = existsArray;
-		blockData->valueArray = valueArray;
-		blockData->valueBuffer = NULL;
-		blockDataArray[columnIndex] = blockData;
-		blockBuffersArray = palloc0(maxBlockCount * sizeof(ColumnBlockBuffers *));
 		for (blockIndex = 0; blockIndex < maxBlockCount; blockIndex++)
 		{
 			blockBuffersArray[blockIndex] = palloc0(sizeof(ColumnBlockBuffers));

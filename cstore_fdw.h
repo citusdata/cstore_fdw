@@ -16,6 +16,7 @@
 
 #include "access/tupdesc.h"
 #include "fmgr.h"
+#include "catalog/pg_am.h"
 #include "catalog/pg_foreign_server.h"
 #include "catalog/pg_foreign_table.h"
 #include "lib/stringinfo.h"
@@ -47,7 +48,7 @@
 /* CStore file signature */
 #define CSTORE_MAGIC_NUMBER "citus_cstore"
 #define CSTORE_VERSION_MAJOR 1
-#define CSTORE_VERSION_MINOR 4
+#define CSTORE_VERSION_MINOR 5
 
 /* miscellaneous defines */
 #define CSTORE_FDW_NAME "cstore_fdw"
