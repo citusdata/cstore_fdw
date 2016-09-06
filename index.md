@@ -9,9 +9,9 @@ tar_url: https://github.com/citusdata/cstore_fdw/archive/v1.5.0.tar.gz
 Introducing `cstore_fdw`, the first [column-oriented][] store available for PostgreSQL. Using it will let you:
 
   * Leverage typical analytics benefits of columnar stores
-  * Deploy on stock PostgreSQL or scale-out PostgreSQL ([CitusDB][citus])
+  * Deploy on stock PostgreSQL or scale-out PostgreSQL ([Citus][citus])
 
-Download and get started at {{site.github.repository_url}}.
+Download and get started at https://github.com/citusdata/cstore_fdw.
 
 # Highlights
 
