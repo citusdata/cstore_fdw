@@ -1,5 +1,5 @@
 ga_tracking_id: UA-32858865-2
-markdown: redcarpet
+markdown: kramdown
 pygments: true
 redcarpet:
   input: GFM
