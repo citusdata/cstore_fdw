@@ -21,12 +21,15 @@
 #include <unistd.h>
 #include <limits.h>
 #include "access/htup_details.h"
+#include "access/multixact.h"
 #include "access/reloptions.h"
 #include "access/sysattr.h"
 #include "access/tuptoaster.h"
+#include "catalog/indexing.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_foreign_table.h"
 #include "catalog/pg_namespace.h"
+#include "catalog/storage.h"
 #include "commands/copy.h"
 #include "commands/dbcommands.h"
 #include "commands/defrem.h"
@@ -46,14 +49,19 @@
 #include "parser/parser.h"
 #include "parser/parsetree.h"
 #include "parser/parse_coerce.h"
+#include "parser/parse_func.h"
 #include "parser/parse_type.h"
-#include "storage/fd.h"
+#include "storage/bufmgr.h"
 #include "tcop/utility.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/memutils.h"
 #include "utils/lsyscache.h"
+#if PG_VERSION_NUM >= 100000
+#include "utils/regproc.h"
+#endif
 #include "utils/rel.h"
+#include "utils/snapmgr.h"
 #include "utils/tqual.h"
 
 
@@ -72,17 +80,21 @@
 #endif
 
 /* local functions forward declarations */
+static void RegisterCStoreTable(Oid relationId, Oid fileNodeOid);
+static void UnregisterCStoreTable(Oid relationId);
+static Oid CStoreFileNode(Oid relationId);
+
 #if PG_VERSION_NUM >= 100000
 static void CStoreProcessUtility(PlannedStmt *plannedStatement, const char *queryString,
-								 ProcessUtilityContext context,
-								 ParamListInfo paramListInfo,
-								 QueryEnvironment *queryEnvironment,
-								 DestReceiver *destReceiver, char *completionTag);
+								ProcessUtilityContext context,
+								ParamListInfo paramListInfo,
+								QueryEnvironment *queryEnvironment,
+								DestReceiver *destReceiver, char *completionTag);
 #else
 static void CStoreProcessUtility(Node *parseTree, const char *queryString,
-								 ProcessUtilityContext context,
-								 ParamListInfo paramListInfo,
-								 DestReceiver *destReceiver, char *completionTag);
+								ProcessUtilityContext context,
+								ParamListInfo paramListInfo,
+								DestReceiver *destReceiver, char *completionTag);
 #endif
 static bool CopyCStoreTableStatement(CopyStmt* copyStatement);
 static void CheckSuperuserPrivilegesForCopy(const CopyStmt* copyStatement);
@@ -92,27 +104,23 @@ static uint64 CopyIntoCStoreTable(const CopyStmt *copyStatement,
 								  const char *queryString);
 static uint64 CopyOutCStoreTable(CopyStmt* copyStatement, const char* queryString);
 static void CStoreProcessAlterTableCommand(AlterTableStmt *alterStatement);
-static List * DroppedCStoreFilenameList(DropStmt *dropStatement);
+static List * CStoreTableList(void);
+static void RemoveRelationStorage(Oid relationId, Oid fileNodeOid);
 static List * FindCStoreTables(List *tableList);
 static List * OpenRelationsForTruncate(List *cstoreTableList);
 static void TruncateCStoreTables(List *cstoreRelationList);
-static void DeleteCStoreTableFiles(char *filename);
 static void InitializeCStoreTableFile(Oid relationId, Relation relation);
 static bool CStoreTable(Oid relationId);
 static bool CStoreServer(ForeignServer *server);
 static bool DistributedTable(Oid relationId);
 static bool DistributedWorkerCopy(CopyStmt *copyStatement);
-static void CreateCStoreDatabaseDirectory(Oid databaseOid);
-static bool DirectoryExists(StringInfo directoryName);
-static void CreateDirectory(StringInfo directoryName);
-static void RemoveCStoreDatabaseDirectory(Oid databaseOid);
 static StringInfo OptionNamesString(Oid currentContextId);
 static CStoreFdwOptions * CStoreGetOptions(Oid foreignTableId);
 static char * CStoreGetOptionValue(Oid foreignTableId, const char *optionName);
-static void ValidateForeignTableOptions(char *filename, char *compressionTypeString,
+static void ValidateForeignTableOptions(char *compressionTypeString,
 										char *stripeRowCountString,
-										char *blockRowCountString);
-static char * CStoreDefaultFilePath(Oid foreignTableId);
+										char *blockRowCountString,
+										char *logging);
 static CompressionType ParseCompressionType(const char *compressionTypeString);
 static void CStoreGetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel,
 									Oid foreignTableId);
@@ -128,8 +136,8 @@ static ForeignScan * CStoreGetForeignPlan(PlannerInfo *root, RelOptInfo *baserel
 										  Oid foreignTableId, ForeignPath *bestPath,
 										  List *targetList, List *scanClauses);
 #endif
-static double TupleCountEstimate(RelOptInfo *baserel, const char *filename);
-static BlockNumber PageCount(const char *filename);
+static double TupleCountEstimate(RelOptInfo *baserel, Relation relation);
+static BlockNumber PageCount(Relation relation);
 static List * ColumnList(RelOptInfo *baserel, Oid foreignTableId);
 static void CStoreExplainForeignScan(ForeignScanState *scanState,
 									 ExplainState *explainState);
@@ -174,7 +182,8 @@ static ProcessUtility_hook_type PreviousProcessUtilityHook = NULL;
  * previous utility hook, and then install our hook to pre-intercept calls to
  * the copy command.
  */
-void _PG_init(void)
+void
+_PG_init(void)
 {
 	PreviousProcessUtilityHook = ProcessUtility_hook;
 	ProcessUtility_hook = CStoreProcessUtility;
@@ -185,7 +194,8 @@ void _PG_init(void)
  * _PG_fini is called when the module is unloaded. This function uninstalls the
  * extension's hooks.
  */
-void _PG_fini(void)
+void
+_PG_fini(void)
 {
 	ProcessUtility_hook = PreviousProcessUtilityHook;
 }
@@ -193,9 +203,8 @@ void _PG_fini(void)
 
 /*
  * cstore_ddl_event_end_trigger is the event trigger function which is called on
- * ddl_command_end event. This function creates required directories after the
- * CREATE SERVER statement and valid data and footer files after the CREATE FOREIGN
- * TABLE statement.
+ * ddl_command_end event. This function initializes data and footer storage
+ * after the CREATE FOREIGN TABLE statement.
  */
 Datum
 cstore_ddl_event_end_trigger(PG_FUNCTION_ARGS)
@@ -212,17 +221,7 @@ cstore_ddl_event_end_trigger(PG_FUNCTION_ARGS)
 	triggerData = (EventTriggerData *) fcinfo->context;
 	parseTree = triggerData->parsetree;
 
-	if (nodeTag(parseTree) == T_CreateForeignServerStmt)
-	{
-		CreateForeignServerStmt *serverStatement = (CreateForeignServerStmt *) parseTree;
-
-		char *foreignWrapperName = serverStatement->fdwname;
-		if (strncmp(foreignWrapperName, CSTORE_FDW_NAME, NAMEDATALEN) == 0)
-		{
-			CreateCStoreDatabaseDirectory(MyDatabaseId);
-		}
-	}
-	else if (nodeTag(parseTree) == T_CreateForeignTableStmt)
+	if (nodeTag(parseTree) == T_CreateForeignTableStmt)
 	{
 		CreateForeignTableStmt *createStatement = (CreateForeignTableStmt *) parseTree;
 		char *serverName = createStatement->servername;
@@ -235,21 +234,147 @@ cstore_ddl_event_end_trigger(PG_FUNCTION_ARGS)
 											  AccessShareLock, false);
 			Relation relation = heap_open(relationId, AccessExclusiveLock);
 
-			/*
-			 * Make sure database directory exists before creating a table.
-			 * This is necessary when a foreign server is created inside
-			 * a template database and a new database is created out of it.
-			 * We have no chance to hook into server creation to create data
-			 * directory for it during database creation time.
-			 */
-			CreateCStoreDatabaseDirectory(MyDatabaseId);
+			RelationCreateStorage(relation->rd_node, relation->rd_rel->relpersistence);
 
 			InitializeCStoreTableFile(relationId, relation);
 			heap_close(relation, AccessExclusiveLock);
+
+			RegisterCStoreTable(relationId, relation->rd_node.relNode);
 		}
 	}
 
 	PG_RETURN_NULL();
+}
+
+
+/*
+ * RegisterCStoreTable registers provided cstore table relation id by
+ * adding a new row to pg_cstore_tables.
+ */
+static void
+RegisterCStoreTable(Oid relationId, Oid fileNodeOid)
+{
+	Oid pgCstoreTablesOid = InvalidOid;
+	Relation pgCstoreTables = NULL;
+	TupleDesc tupleDescriptor = NULL;
+	HeapTuple heapTuple = NULL;
+	Datum values[] = { ObjectIdGetDatum(relationId), ObjectIdGetDatum(fileNodeOid) };
+	bool isNulls[] = { false, false };
+
+	pgCstoreTablesOid = get_relname_relid(CSTORE_TABLES_NAME, PG_CATALOG_NAMESPACE);
+	if (pgCstoreTablesOid == InvalidOid)
+	{
+		ereport(ERROR, (errmsg("could not find table %s", CSTORE_TABLES_NAME)));
+	}
+
+	/* open shard relation and insert new tuple */
+	pgCstoreTables = heap_open(pgCstoreTablesOid, RowExclusiveLock);
+	tupleDescriptor = RelationGetDescr(pgCstoreTables);
+	Assert(tupleDescriptor->natts == 2);
+	heapTuple = heap_form_tuple(tupleDescriptor, values, isNulls);
+
+#if PG_VERSION_NUM >= 100000
+	CatalogTupleInsert(pgCstoreTables, heapTuple);
+#else
+	simple_heap_insert(pgCstoreTables, heapTuple);
+	CatalogUpdateIndexes(pgCstoreTables, heapTuple);
+#endif
+
+	heap_close(pgCstoreTables, NoLock);
+}
+
+
+/*
+ * UnregisterCStoreTable unregisters a cstore_fdw table by removing
+ * the row from table pg_cstore_tables.
+ */
+static void
+UnregisterCStoreTable(Oid relationId)
+{
+	Oid pgCstoreTablesOid = InvalidOid;
+	Relation pgCstoreTables = NULL;
+	HeapTuple heapTuple = NULL;
+	int scanKeyCount = 1;
+	ScanKeyData scanKey[1];
+	HeapScanDesc scanDescriptor = NULL;
+
+	pgCstoreTablesOid = get_relname_relid(CSTORE_TABLES_NAME, PG_CATALOG_NAMESPACE);
+	if (pgCstoreTablesOid == InvalidOid)
+	{
+		ereport(ERROR, (errmsg("could not find table %s", CSTORE_TABLES_NAME)));
+	}
+
+	pgCstoreTables = heap_open(pgCstoreTablesOid, RowExclusiveLock);
+
+	ScanKeyInit(&scanKey[0], 1, BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(relationId));
+
+	scanDescriptor = heap_beginscan(pgCstoreTables, GetTransactionSnapshot(),
+									scanKeyCount, scanKey);
+
+	heapTuple = heap_getnext(scanDescriptor, ForwardScanDirection);
+
+	while (HeapTupleIsValid(heapTuple))
+	{
+		simple_heap_delete(pgCstoreTables, &heapTuple->t_self);
+		heapTuple = heap_getnext(scanDescriptor, ForwardScanDirection);
+	}
+
+	heap_endscan(scanDescriptor);
+
+	heap_close(pgCstoreTables, NoLock);
+}
+
+
+/*
+ * CStoreFileNode returns file node oid for given cstore relation id.
+ * The function returns InvalidOid if no cstore table is registered with this
+ * relation id.
+ */
+static Oid
+CStoreFileNode(Oid relationId)
+{
+	Oid fileNodeOid = InvalidOid;
+	Oid pgCstoreTablesOid = InvalidOid;
+	Relation pgCstoreTables = NULL;
+	HeapTuple heapTuple = NULL;
+	int scanKeyCount = 1;
+	ScanKeyData scanKey[1];
+	HeapScanDesc scanDescriptor = NULL;
+
+	pgCstoreTablesOid = get_relname_relid(CSTORE_TABLES_NAME, PG_CATALOG_NAMESPACE);
+
+	if (pgCstoreTablesOid == InvalidOid)
+	{
+		ereport(ERROR, (errmsg("could not find table %s", CSTORE_TABLES_NAME)));
+	}
+
+	pgCstoreTables = heap_open(pgCstoreTablesOid, RowExclusiveLock);
+
+	ScanKeyInit(&scanKey[0], 1, BTEqualStrategyNumber, F_OIDEQ,
+				ObjectIdGetDatum(relationId));
+
+	scanDescriptor = heap_beginscan(pgCstoreTables, GetTransactionSnapshot(),
+									scanKeyCount, scanKey);
+
+	heapTuple = heap_getnext(scanDescriptor, ForwardScanDirection);
+
+	if (HeapTupleIsValid(heapTuple))
+	{
+		TupleDesc tupleDescriptor = RelationGetDescr(pgCstoreTables);
+		bool isNull = false;
+		Datum fileNodeDatum = heap_getattr(heapTuple, 2,
+										   tupleDescriptor, &isNull);
+
+		Assert(!isNull);
+
+		fileNodeOid = DatumGetObjectId(fileNodeDatum);
+	}
+
+	heap_endscan(scanDescriptor);
+	heap_close(pgCstoreTables, NoLock);
+
+	return fileNodeOid;
 }
 
 
@@ -299,8 +424,11 @@ CStoreProcessUtility(Node * parseTree, const char *queryString,
 
 		if (dropStmt->removeType == OBJECT_EXTENSION)
 		{
-			bool removeCStoreDirectory = false;
 			ListCell *objectCell = NULL;
+			List *cstoreTableList = NIL;
+			List *cstoreFileNodeList = NIL;
+			ListCell *relationIdCell = NULL;
+			ListCell *fileNodeCell = NULL;
 
 			foreach(objectCell, dropStmt->objects)
 			{
@@ -314,35 +442,46 @@ CStoreProcessUtility(Node * parseTree, const char *queryString,
 				Assert(IsA(object, List));
 				objectName = strVal(linitial((List *) object));
 #endif
-
+				/*
+				 * We rely on sql drop event when objects are dropped, however,
+				 * dropping the extension prevents our sql drop trigger to be
+				 * called and we can't safely drop file resources.
+				 * Here we first record cstore relation ids if cstore extension is
+				 * being dropped. Then we record file nodes of of those relations.
+				 *
+				 * We let postgres to drop cstore extension, and remove file nodes
+				 * of all cstore tables if the extension drop succeeds.
+				 *
+				 */
 				if (strncmp(CSTORE_FDW_NAME, objectName, NAMEDATALEN) == 0)
 				{
-					removeCStoreDirectory = true;
+					cstoreTableList = CStoreTableList();
 				}
 			}
 
-			CALL_PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo,
-								  destReceiver, completionTag);
-
-			if (removeCStoreDirectory)
+			foreach(relationIdCell, cstoreTableList)
 			{
-				RemoveCStoreDatabaseDirectory(MyDatabaseId);
+				Oid relationId = lfirst_oid(relationIdCell);
+				cstoreFileNodeList = lappend_oid(cstoreFileNodeList,
+												 CStoreFileNode(relationId));
+			}
+
+
+			CALL_PREVIOUS_UTILITY(parseTree, queryString, context,
+					paramListInfo, destReceiver, completionTag);
+
+			/* mark cstore relations' storage for deletion*/
+			forboth(relationIdCell, cstoreTableList, fileNodeCell, cstoreFileNodeList)
+			{
+				Oid relationId = lfirst_oid(relationIdCell);
+				Oid fileNodeOid = lfirst_oid(fileNodeCell);
+				RemoveRelationStorage(relationId, fileNodeOid);
 			}
 		}
 		else
 		{
-			ListCell *fileListCell = NULL;
-			List *droppedTables = DroppedCStoreFilenameList((DropStmt *) parseTree);
-
-			CALL_PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo,
-								  destReceiver, completionTag);
-
-			foreach(fileListCell, droppedTables)
-			{
-				char *fileName = lfirst(fileListCell);
-
-				DeleteCStoreTableFiles(fileName);
-			}
+			CALL_PREVIOUS_UTILITY(parseTree, queryString, context,
+					paramListInfo, destReceiver, completionTag);
 		}
 	}
 	else if (nodeTag(parseTree) == T_TruncateStmt)
@@ -376,21 +515,6 @@ CStoreProcessUtility(Node * parseTree, const char *queryString,
 		CStoreProcessAlterTableCommand(alterTable);
 		CALL_PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo,
 							  destReceiver, completionTag);
-	}
-	else if (nodeTag(parseTree) == T_DropdbStmt)
-	{
-		DropdbStmt *dropDdStmt = (DropdbStmt *) parseTree;
-		bool missingOk = true;
-		Oid databaseOid = get_database_oid(dropDdStmt->dbname, missingOk);
-
-		/* let postgres handle error checking and dropping of the database */
-		CALL_PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo,
-							  destReceiver, completionTag);
-
-		if (databaseOid != InvalidOid)
-		{
-			RemoveCStoreDatabaseDirectory(databaseOid);
-		}
 	}
 	/* handle other utility statements */
 	else
@@ -572,10 +696,10 @@ CopyIntoCStoreTable(const CopyStmt *copyStatement, const char *queryString)
 #endif
 
 	/* init state to write to the cstore file */
-	writeState = CStoreBeginWrite(cstoreFdwOptions->filename,
-								  cstoreFdwOptions->compressionType,
+	writeState = CStoreBeginWrite(relation, cstoreFdwOptions->compressionType,
 								  cstoreFdwOptions->stripeRowCount,
 								  cstoreFdwOptions->blockRowCount,
+								  cstoreFdwOptions->logging,
 								  tupleDescriptor);
 
 	while (nextRowFound)
@@ -733,46 +857,64 @@ CStoreProcessAlterTableCommand(AlterTableStmt *alterStatement)
 }
 
 
-/*
- * DropppedCStoreFilenameList extracts and returns the list of cstore file names
- * from DROP table statement
- */
+/* CStoreTableList returns oids of cstore_fdw tables stored in pg_cstore_tables */
 static List *
-DroppedCStoreFilenameList(DropStmt *dropStatement)
+CStoreTableList(void)
 {
-	List *droppedCStoreFileList = NIL;
+	List *cstoreRelationIdList = NIL;
+	Oid cstoreTablesOid = InvalidOid;
+	Relation heapRelation = NULL;
+	HeapScanDesc scanDesc = NULL;
+	HeapTuple heapTuple = NULL;
+	TupleDesc tupleDescriptor = NULL;
 
-	if (dropStatement->removeType == OBJECT_FOREIGN_TABLE)
+	cstoreTablesOid = get_relname_relid(CSTORE_TABLES_NAME, PG_CATALOG_NAMESPACE);
+	Assert(cstoreTablesOid != InvalidOid);
+
+	heapRelation = heap_open(cstoreTablesOid, AccessExclusiveLock);
+	tupleDescriptor = RelationGetDescr(heapRelation);
+
+	scanDesc = heap_beginscan(heapRelation, GetTransactionSnapshot(), 0, NULL);
+
+	heapTuple = heap_getnext(scanDesc, ForwardScanDirection);
+	while (HeapTupleIsValid(heapTuple))
 	{
-		ListCell *dropObjectCell = NULL;
-		foreach(dropObjectCell, dropStatement->objects)
-		{
-			List *tableNameList = (List *) lfirst(dropObjectCell);
-			RangeVar *rangeVar = makeRangeVarFromNameList(tableNameList);
+		bool isNull = false;
+		Datum logicalrelidDatum = heap_getattr(heapTuple, 1, tupleDescriptor, &isNull);
+		Oid relationId = DatumGetObjectId(logicalrelidDatum);
 
-			Oid relationId = RangeVarGetRelid(rangeVar, AccessShareLock, true);
-			if (CStoreTable(relationId))
-			{
-				CStoreFdwOptions *cstoreFdwOptions = CStoreGetOptions(relationId);
-				char *defaultfilename = CStoreDefaultFilePath(relationId);
+		cstoreRelationIdList = lappend_oid(cstoreRelationIdList, relationId);
 
-				/*
-				 * Skip files that are placed in default location, they are handled
-				 * by sql drop trigger. Both paths are generated by code, use
-				 * of strcmp is safe here.
-				 */
-				if (strcmp(defaultfilename, cstoreFdwOptions->filename) == 0)
-				{
-					continue;
-				}
-
-				droppedCStoreFileList = lappend(droppedCStoreFileList,
-												cstoreFdwOptions->filename);
-			}
-		}
+		heapTuple = heap_getnext(scanDesc, ForwardScanDirection);
 	}
 
-	return droppedCStoreFileList;
+	heap_endscan(scanDesc);
+	heap_close(heapRelation, NoLock);
+
+	return cstoreRelationIdList;
+}
+
+
+/*
+ * RemoveRelationStorage marks storage nodes for a relation for deletion.
+ *
+ * Postgres does not mark foreign tables' file nodes for deletion since
+ * it never creates it. Here we create a fake relation, associate this
+ * relation with cstore tables file node, then mark this relation for
+ * deletion so that file node is dropped when the transaction commits.
+ */
+static void
+RemoveRelationStorage(Oid relationId, Oid fileNodeOid)
+{
+	RelFileNode relFileNode = { MyDatabaseTableSpace, MyDatabaseId, fileNodeOid };
+	RelationData relationData;
+
+	memset(&relationData, 0, sizeof(RelationData));
+
+	relationData.rd_node = relFileNode;
+	relationData.rd_backend = InvalidBackendId;
+
+	RelationDropStorage(&relationData);
 }
 
 
@@ -841,76 +983,54 @@ static void
 TruncateCStoreTables(List *cstoreRelationList)
 {
 	ListCell *relationCell = NULL;
+
+	MultiXactId minmulti = GetOldestMultiXactId();
+
 	foreach(relationCell, cstoreRelationList)
 	{
 		Relation relation = (Relation) lfirst(relationCell);
 		Oid relationId = relation->rd_id;
-		CStoreFdwOptions *cstoreFdwOptions = NULL;
 
 		Assert(CStoreTable(relationId));
 
-		cstoreFdwOptions = CStoreGetOptions(relationId);
-		DeleteCStoreTableFiles(cstoreFdwOptions->filename);
+		RelationSetNewRelfilenode(relation,
+#if PG_VERSION_NUM >= 90500
+								  relation->rd_rel->relpersistence,
+#endif
+								  RecentXmin, minmulti);
+
+		UnregisterCStoreTable(relationId);
+		RegisterCStoreTable(relationId, relation->rd_node.relNode);
+
 		InitializeCStoreTableFile(relationId, relation);
 	}
 }
 
 
 /*
- * DeleteCStoreTableFiles deletes the data and footer files for a cstore table
- * whose data filename is given.
+ * InitializeCStoreTableFile creates an initializes data and footer files
+ * for a cstore table. Files are allocated in postgres internal storage.
  */
 static void
-DeleteCStoreTableFiles(char *filename)
-{
-	int dataFileRemoved = 0;
-	int footerFileRemoved = 0;
-
-	StringInfo tableFooterFilename = makeStringInfo();
-	appendStringInfo(tableFooterFilename, "%s%s", filename, CSTORE_FOOTER_FILE_SUFFIX);
-
-	/* delete the footer file */
-	footerFileRemoved = unlink(tableFooterFilename->data);
-	if (footerFileRemoved != 0)
-	{
-		ereport(WARNING, (errcode_for_file_access(),
-						  errmsg("could not delete file \"%s\": %m",
-								 tableFooterFilename->data)));
-	}
-
-	/* delete the data file */
-	dataFileRemoved = unlink(filename);
-	if (dataFileRemoved != 0)
-	{
-		ereport(WARNING, (errcode_for_file_access(),
-						  errmsg("could not delete file \"%s\": %m",
-								 filename)));
-	}
-}
-
-
-/*
- * InitializeCStoreTableFile creates data and footer file for a cstore table.
- * The function assumes data and footer files do not exist, therefore
- * it should be called on empty or non-existing table. Notice that the caller
- * is expected to acquire AccessExclusiveLock on the relation.
- */
-static void InitializeCStoreTableFile(Oid relationId, Relation relation)
+InitializeCStoreTableFile(Oid relationId, Relation relation)
 {
 	TableWriteState *writeState = NULL;
 	TupleDesc tupleDescriptor = RelationGetDescr(relation);
-	CStoreFdwOptions* cstoreFdwOptions = CStoreGetOptions(relationId);
+	CStoreFdwOptions *cstoreFdwOptions = CStoreGetOptions(relationId);
 
 	/*
 	 * Initialize state to write to the cstore file. This creates an
 	 * empty data file and a valid footer file for the table.
 	 */
-	writeState = CStoreBeginWrite(cstoreFdwOptions->filename,
-			cstoreFdwOptions->compressionType, cstoreFdwOptions->stripeRowCount,
-			cstoreFdwOptions->blockRowCount, tupleDescriptor);
+	writeState = CStoreBeginWrite(relation,
+								  cstoreFdwOptions->compressionType,
+								  cstoreFdwOptions->stripeRowCount,
+								  cstoreFdwOptions->blockRowCount,
+								  cstoreFdwOptions->logging,
+								  tupleDescriptor);
+
 	CStoreEndWrite(writeState);
 }
-
 
 
 /*
@@ -1019,127 +1139,23 @@ DistributedTable(Oid relationId)
 static bool
 DistributedWorkerCopy(CopyStmt *copyStatement)
 {
-    ListCell *optionCell = NULL;
-    foreach(optionCell, copyStatement->options)
-    {
-        DefElem *defel = (DefElem *) lfirst(optionCell);
-        if (strncmp(defel->defname, "master_host", NAMEDATALEN) == 0)
-        {
-            return true;
-        }
-    }
-
-    return false;
-}
-
-
-/*
- * CreateCStoreDatabaseDirectory creates the directory (and parent directories,
- * if needed) used to store automatically managed cstore_fdw files. The path to
- * the directory is $PGDATA/cstore_fdw/{databaseOid}.
- */
-static void
-CreateCStoreDatabaseDirectory(Oid databaseOid)
-{
-	bool cstoreDirectoryExists = false;
-	bool databaseDirectoryExists = false;
-	StringInfo cstoreDatabaseDirectoryPath = NULL;
-
-	StringInfo cstoreDirectoryPath = makeStringInfo();
-	appendStringInfo(cstoreDirectoryPath, "%s/%s", DataDir, CSTORE_FDW_NAME);
-
-	cstoreDirectoryExists = DirectoryExists(cstoreDirectoryPath);
-	if (!cstoreDirectoryExists)
+	ListCell *optionCell = NULL;
+	foreach(optionCell, copyStatement->options)
 	{
-		CreateDirectory(cstoreDirectoryPath);
-	}
-
-	cstoreDatabaseDirectoryPath = makeStringInfo();
-	appendStringInfo(cstoreDatabaseDirectoryPath, "%s/%s/%u", DataDir,
-					 CSTORE_FDW_NAME, databaseOid);
-
-	databaseDirectoryExists = DirectoryExists(cstoreDatabaseDirectoryPath);
-	if (!databaseDirectoryExists)
-	{
-		CreateDirectory(cstoreDatabaseDirectoryPath);
-	}
-}
-
-
-/* DirectoryExists checks if a directory exists for the given directory name. */
-static bool
-DirectoryExists(StringInfo directoryName)
-{
-	bool directoryExists = true;
-	struct stat directoryStat;
-
-	int statOK = stat(directoryName->data, &directoryStat);
-	if (statOK == 0)
-	{
-		/* file already exists; check that it is a directory */
-		if (!S_ISDIR(directoryStat.st_mode))
+		DefElem *defel = (DefElem *) lfirst(optionCell);
+		if (strncmp(defel->defname, "master_host", NAMEDATALEN) == 0)
 		{
-			ereport(ERROR, (errmsg("\"%s\" is not a directory", directoryName->data),
-							errhint("You need to remove or rename the file \"%s\".",
-									directoryName->data)));
-		}
-	}
-	else
-	{
-		if (errno == ENOENT)
-		{
-			directoryExists = false;
-		}
-		else
-		{
-			ereport(ERROR, (errcode_for_file_access(),
-							errmsg("could not stat directory \"%s\": %m",
-								   directoryName->data)));
+			return true;
 		}
 	}
 
-	return directoryExists;
-}
-
-
-/* CreateDirectory creates a new directory with the given directory name. */
-static void
-CreateDirectory(StringInfo directoryName)
-{
-	int makeOK = mkdir(directoryName->data, S_IRWXU);
-	if (makeOK != 0)
-	{
-		ereport(ERROR, (errcode_for_file_access(),
-						errmsg("could not create directory \"%s\": %m",
-							   directoryName->data)));
-	}
-}
-
-
-/*
- * RemoveCStoreDatabaseDirectory removes CStore directory previously
- * created for this database. 
- * However it does not remove 'cstore_fdw' directory even if there
- * are no other databases left.
- */
-static void
-RemoveCStoreDatabaseDirectory(Oid databaseOid)
-{
-	StringInfo cstoreDirectoryPath = makeStringInfo();
-	StringInfo cstoreDatabaseDirectoryPath = makeStringInfo();
-
-	appendStringInfo(cstoreDirectoryPath, "%s/%s", DataDir, CSTORE_FDW_NAME);
-
-	appendStringInfo(cstoreDatabaseDirectoryPath, "%s/%s/%u", DataDir,
-					 CSTORE_FDW_NAME, databaseOid);
-
-	rmtree(cstoreDatabaseDirectoryPath->data, true);
+	return false;
 }
 
 
 /*
  * cstore_table_size returns the total on-disk size of a cstore table in bytes.
- * The result includes the sizes of data file and footer file.
+ * The result includes the sizes of data and footer.
  */
 Datum
 cstore_table_size(PG_FUNCTION_ARGS)
@@ -1147,13 +1163,9 @@ cstore_table_size(PG_FUNCTION_ARGS)
 	Oid relationId = PG_GETARG_OID(0);
 
 	int64 tableSize = 0;
-	CStoreFdwOptions *cstoreFdwOptions = NULL;
-	char *dataFilename = NULL;
-	StringInfo footerFilename = NULL;
-	int dataFileStatResult = 0;
-	int footerFileStatResult = 0;
-	struct stat dataFileStatBuffer;
-	struct stat footerFileStatBuffer;
+	BlockNumber pageCount = 0;
+
+	Relation relation = NULL;
 
 	bool cstoreTable = CStoreTable(relationId);
 	if (!cstoreTable)
@@ -1161,30 +1173,11 @@ cstore_table_size(PG_FUNCTION_ARGS)
 		ereport(ERROR, (errmsg("relation is not a cstore table")));
 	}
 
-	cstoreFdwOptions = CStoreGetOptions(relationId);
-	dataFilename = cstoreFdwOptions->filename;
+	relation = heap_open(relationId, AccessShareLock);
+	pageCount = PageCount(relation);
+	heap_close(relation, NoLock);
 
-	dataFileStatResult = stat(dataFilename, &dataFileStatBuffer);
-	if (dataFileStatResult != 0)
-	{
-		ereport(ERROR, (errcode_for_file_access(),
-						errmsg("could not stat file \"%s\": %m", dataFilename)));
-	}
-
-	footerFilename = makeStringInfo();
-	appendStringInfo(footerFilename, "%s%s", dataFilename,
-					 CSTORE_FOOTER_FILE_SUFFIX);
-
-	footerFileStatResult = stat(footerFilename->data, &footerFileStatBuffer);
-	if (footerFileStatResult != 0)
-	{
-		ereport(ERROR, (errcode_for_file_access(),
-						errmsg("could not stat file \"%s\": %m",
-								footerFilename->data)));
-	}
-
-	tableSize += dataFileStatBuffer.st_size;
-	tableSize += footerFileStatBuffer.st_size;
+	tableSize = pageCount * BLCKSZ;
 
 	PG_RETURN_INT64(tableSize);
 }
@@ -1229,10 +1222,10 @@ cstore_fdw_validator(PG_FUNCTION_ARGS)
 	Oid optionContextId = PG_GETARG_OID(1);
 	List *optionList = untransformRelOptions(optionArray);
 	ListCell *optionCell = NULL;
-	char *filename = NULL;
 	char *compressionTypeString = NULL;
 	char *stripeRowCountString = NULL;
 	char *blockRowCountString = NULL;
+	char *loggingString = NULL;
 
 	foreach(optionCell, optionList)
 	{
@@ -1264,11 +1257,7 @@ cstore_fdw_validator(PG_FUNCTION_ARGS)
 									optionNamesString->data)));
 		}
 
-		if (strncmp(optionName, OPTION_NAME_FILENAME, NAMEDATALEN) == 0)
-		{
-			filename = defGetString(optionDef);
-		}
-		else if (strncmp(optionName, OPTION_NAME_COMPRESSION_TYPE, NAMEDATALEN) == 0)
+		if (strncmp(optionName, OPTION_NAME_COMPRESSION_TYPE, NAMEDATALEN) == 0)
 		{
 			compressionTypeString = defGetString(optionDef);
 		}
@@ -1280,12 +1269,17 @@ cstore_fdw_validator(PG_FUNCTION_ARGS)
 		{
 			blockRowCountString = defGetString(optionDef);
 		}
+		else if (strncmp(optionName, OPTION_NAME_LOGGING, NAMEDATALEN) == 0)
+		{
+			loggingString = defGetString(optionDef);
+		}
 	}
 
 	if (optionContextId == ForeignTableRelationId)
 	{
-		ValidateForeignTableOptions(filename, compressionTypeString,
-									stripeRowCountString, blockRowCountString);
+		ValidateForeignTableOptions(compressionTypeString,
+									stripeRowCountString, blockRowCountString,
+									loggingString);
 	}
 
 	PG_RETURN_VOID();
@@ -1294,32 +1288,18 @@ cstore_fdw_validator(PG_FUNCTION_ARGS)
 
 /*
  * cstore_clean_table_resources cleans up table data and metadata with provided
- * relation id. The function is meant to be called from drop_event_trigger. It
- * has no way of knowing if the provided relation id belongs to a cstore table.
- * Therefore it first checks if data file exists at default location before
- * attempting to remove data and footer files. If the table is created at a
- * custom path than its resources would not be removed.
+ * relation id. It also removes entry in table pg_cstore_tables.
+ *
+ * The function is meant to be called from drop_event_trigger. Although it is
+ * not enforced.
  */
 Datum
 cstore_clean_table_resources(PG_FUNCTION_ARGS)
 {
 	Oid relationId = PG_GETARG_OID(0);
-	StringInfo filePath = makeStringInfo();
-	struct stat fileStat;
-	int statResult = -1;
-
-	appendStringInfo(filePath, "%s/%s/%d/%d", DataDir, CSTORE_FDW_NAME,
-					 (int) MyDatabaseId, (int) relationId);
-
-	/*
-	 * Check to see if the file exist first. This is the only way to
-	 * find out if the table being dropped is a cstore table.
-	 */
-	statResult = stat(filePath->data, &fileStat);
-	if (statResult == 0)
-	{
-		DeleteCStoreTableFiles(filePath->data);
-	}
+	Oid fileNodeOid = CStoreFileNode(relationId);
+	RemoveRelationStorage(relationId, fileNodeOid);
+	UnregisterCStoreTable(relationId);
 
 	PG_RETURN_VOID();
 }
@@ -1368,15 +1348,15 @@ static CStoreFdwOptions *
 CStoreGetOptions(Oid foreignTableId)
 {
 	CStoreFdwOptions *cstoreFdwOptions = NULL;
-	char *filename = NULL;
 	CompressionType compressionType = DEFAULT_COMPRESSION_TYPE;
 	int32 stripeRowCount = DEFAULT_STRIPE_ROW_COUNT;
 	int32 blockRowCount = DEFAULT_BLOCK_ROW_COUNT;
+	bool logging = true;
 	char *compressionTypeString = NULL;
 	char *stripeRowCountString = NULL;
 	char *blockRowCountString = NULL;
+	char *loggingString = NULL;
 
-	filename = CStoreGetOptionValue(foreignTableId, OPTION_NAME_FILENAME);
 	compressionTypeString = CStoreGetOptionValue(foreignTableId,
 												 OPTION_NAME_COMPRESSION_TYPE);
 	stripeRowCountString = CStoreGetOptionValue(foreignTableId,
@@ -1384,8 +1364,11 @@ CStoreGetOptions(Oid foreignTableId)
 	blockRowCountString = CStoreGetOptionValue(foreignTableId,
 											   OPTION_NAME_BLOCK_ROW_COUNT);
 
-	ValidateForeignTableOptions(filename, compressionTypeString,
-								stripeRowCountString, blockRowCountString);
+	loggingString = CStoreGetOptionValue(foreignTableId,
+										 OPTION_NAME_LOGGING);
+
+	ValidateForeignTableOptions(compressionTypeString,
+								stripeRowCountString, blockRowCountString, loggingString);
 
 	/* parse provided options */
 	if (compressionTypeString != NULL)
@@ -1400,18 +1383,16 @@ CStoreGetOptions(Oid foreignTableId)
 	{
 		blockRowCount = pg_atoi(blockRowCountString, sizeof(int32), 0);
 	}
-
-	/* set default filename if it is not provided */
-	if (filename == NULL)
+	if (loggingString != NULL)
 	{
-		filename = CStoreDefaultFilePath(foreignTableId);
+		parse_bool(loggingString, &logging);
 	}
 
 	cstoreFdwOptions = palloc0(sizeof(CStoreFdwOptions));
-	cstoreFdwOptions->filename = filename;
 	cstoreFdwOptions->compressionType = compressionType;
 	cstoreFdwOptions->stripeRowCount = stripeRowCount;
 	cstoreFdwOptions->blockRowCount = blockRowCount;
+	cstoreFdwOptions->logging = logging;
 
 	return cstoreFdwOptions;
 }
@@ -1459,12 +1440,10 @@ CStoreGetOptionValue(Oid foreignTableId, const char *optionName)
  * considered invalid.
  */
 static void
-ValidateForeignTableOptions(char *filename, char *compressionTypeString,
-							char *stripeRowCountString, char *blockRowCountString)
+ValidateForeignTableOptions(char *compressionTypeString,
+							char *stripeRowCountString, char *blockRowCountString,
+							char *loggingString)
 {
-	/* we currently do not have any checks for filename */
-	(void) filename;
-
 	/* check if the provided compression type is valid */
 	if (compressionTypeString != NULL)
 	{
@@ -1506,29 +1485,18 @@ ValidateForeignTableOptions(char *filename, char *compressionTypeString,
 									BLOCK_ROW_COUNT_MAXIMUM)));
 		}
 	}
-}
 
-
-/*
- * CStoreDefaultFilePath constructs the default file path to use for a cstore_fdw
- * table. The path is of the form $PGDATA/cstore_fdw/{databaseOid}/{relfilenode}.
- */
-static char *
-CStoreDefaultFilePath(Oid foreignTableId)
-{
-	Relation relation = relation_open(foreignTableId, AccessShareLock);
-	RelFileNode relationFileNode = relation->rd_node; 
-
-	Oid databaseOid = relationFileNode.dbNode;
-	Oid relationFileOid = relationFileNode.relNode;
-
-	StringInfo cstoreFilePath = makeStringInfo();
-	appendStringInfo(cstoreFilePath, "%s/%s/%u/%u", DataDir, CSTORE_FDW_NAME,
-					 databaseOid, relationFileOid);
-
-	relation_close(relation, AccessShareLock);
-
-	return cstoreFilePath->data;
+	/* check if the provided logging flag is valid */
+	if (loggingString != NULL)
+	{
+		bool validLoggingParameter = parse_bool(loggingString, NULL);
+		if (!validLoggingParameter)
+		{
+			ereport(ERROR, (errmsg("invalid logging flag"),
+							errhint("Valid options are: %s",
+									LOGGING_STRING_DELIMITED_LIST)));
+		}
+	}
 }
 
 
@@ -1559,13 +1527,14 @@ ParseCompressionType(const char *compressionTypeString)
 static void
 CStoreGetForeignRelSize(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId)
 {
-	CStoreFdwOptions *cstoreFdwOptions = CStoreGetOptions(foreignTableId);
-	double tupleCountEstimate = TupleCountEstimate(baserel, cstoreFdwOptions->filename);
+	Relation relation = heap_open(foreignTableId, AccessShareLock);
+	double tupleCountEstimate = TupleCountEstimate(baserel, relation);
 	double rowSelectivity = clauselist_selectivity(root, baserel->baserestrictinfo,
 												   0, JOIN_INNER, NULL);
 
 	double outputRowCount = clamp_row_est(tupleCountEstimate * rowSelectivity);
 	baserel->rows = outputRowCount;
+	heap_close(relation, AccessShareLock);
 }
 
 
@@ -1579,7 +1548,6 @@ static void
 CStoreGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId)
 {
 	Path *foreignScanPath = NULL;
-	CStoreFdwOptions *cstoreFdwOptions = CStoreGetOptions(foreignTableId);
 	Relation relation = heap_open(foreignTableId, AccessShareLock);
 
 	/*
@@ -1600,14 +1568,14 @@ CStoreGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId
 	 */
 	List *queryColumnList = ColumnList(baserel, foreignTableId);
 	uint32 queryColumnCount = list_length(queryColumnList);
-	BlockNumber relationPageCount = PageCount(cstoreFdwOptions->filename);
+	BlockNumber relationPageCount = PageCount(relation);
 	uint32 relationColumnCount = RelationGetNumberOfAttributes(relation);
 
 	double queryColumnRatio = (double) queryColumnCount / relationColumnCount;
 	double queryPageCount = relationPageCount * queryColumnRatio;
 	double totalDiskAccessCost = seq_page_cost * queryPageCount;
 
-	double tupleCountEstimate = TupleCountEstimate(baserel, cstoreFdwOptions->filename);
+	double tupleCountEstimate = TupleCountEstimate(baserel, relation);
 
 	/*
 	 * We estimate costs almost the same way as cost_seqscan(), thus assuming
@@ -1712,7 +1680,7 @@ CStoreGetForeignPlan(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId,
  * file.
  */
 static double
-TupleCountEstimate(RelOptInfo *baserel, const char *filename)
+TupleCountEstimate(RelOptInfo *baserel, Relation relation)
 {
 	double tupleCountEstimate = 0.0;
 
@@ -1725,13 +1693,13 @@ TupleCountEstimate(RelOptInfo *baserel, const char *filename)
 		 * that by the current file size.
 		 */
 		double tupleDensity = baserel->tuples / (double) baserel->pages;
-		BlockNumber pageCount = PageCount(filename);
+		BlockNumber pageCount = PageCount(relation);
 
 		tupleCountEstimate = clamp_row_est(tupleDensity * (double) pageCount);
 	}
 	else
 	{
-		tupleCountEstimate = (double) CStoreTableRowCount(filename);
+		tupleCountEstimate = (double) CStoreTableRowCount(relation);
 	}
 
 	return tupleCountEstimate;
@@ -1740,23 +1708,16 @@ TupleCountEstimate(RelOptInfo *baserel, const char *filename)
 
 /* PageCount calculates and returns the number of pages in a file. */
 static BlockNumber
-PageCount(const char *filename)
+PageCount(Relation relation)
 {
 	BlockNumber pageCount = 0;
-	struct stat statBuffer;
+	BlockNumber footerBlockCount = 0;
+	BlockNumber dataBlockCount = 0;
 
-	/* if file doesn't exist at plan time, use default estimate for its size */
-	int statResult = stat(filename, &statBuffer);
-	if (statResult < 0)
-	{
-		statBuffer.st_size = 10 * BLCKSZ;
-	}
+	footerBlockCount = RelationGetNumberOfBlocksInFork(relation, FOOTER_FORKNUM);
+	dataBlockCount = RelationGetNumberOfBlocksInFork(relation, DATA_FORKNUM);
 
-	pageCount = (statBuffer.st_size + (BLCKSZ - 1)) / BLCKSZ;
-	if (pageCount < 1)
-	{
-		pageCount = 1;
-	}
+	pageCount = footerBlockCount + dataBlockCount;
 
 	return pageCount;
 }
@@ -1872,22 +1833,17 @@ ColumnList(RelOptInfo *baserel, Oid foreignTableId)
 static void
 CStoreExplainForeignScan(ForeignScanState *scanState, ExplainState *explainState)
 {
-	Oid foreignTableId = RelationGetRelid(scanState->ss.ss_currentRelation);
-	CStoreFdwOptions *cstoreFdwOptions = CStoreGetOptions(foreignTableId);
-
-	ExplainPropertyText("CStore File", cstoreFdwOptions->filename, explainState);
-
 	/* supress file size if we're not showing cost details */
 	if (explainState->costs)
 	{
-		struct stat statBuffer;
+		Oid foreignTableId = RelationGetRelid(scanState->ss.ss_currentRelation);
+		Relation relation = heap_open(foreignTableId, AccessShareLock);
+		BlockNumber pageCount = PageCount(relation);
+		long fileSize = pageCount * BLCKSZ;
 
-		int statResult = stat(cstoreFdwOptions->filename, &statBuffer);
-		if (statResult == 0)
-		{
-			ExplainPropertyLong("CStore File Size", (long) statBuffer.st_size,
-								explainState);
-		}
+		heap_close(relation, NoLock);
+
+		ExplainPropertyLong("CStore File Size", fileSize, explainState);
 	}
 }
 
@@ -1897,14 +1853,13 @@ static void
 CStoreBeginForeignScan(ForeignScanState *scanState, int executorFlags)
 {
 	TableReadState *readState = NULL;
-	Oid foreignTableId = InvalidOid;
-	CStoreFdwOptions *cstoreFdwOptions = NULL;
 	TupleTableSlot *tupleSlot = scanState->ss.ss_ScanTupleSlot;
 	TupleDesc tupleDescriptor = tupleSlot->tts_tupleDescriptor;
 	List *columnList = NIL;
 	ForeignScan *foreignScan = NULL;
 	List *foreignPrivateList = NIL;
 	List *whereClauseList = NIL;
+	Relation currentRelation = scanState->ss.ss_currentRelation;
 
 	/* if Explain with no Analyze, do nothing */
 	if (executorFlags & EXEC_FLAG_EXPLAIN_ONLY)
@@ -1912,16 +1867,13 @@ CStoreBeginForeignScan(ForeignScanState *scanState, int executorFlags)
 		return;
 	}
 
-	foreignTableId = RelationGetRelid(scanState->ss.ss_currentRelation);
-	cstoreFdwOptions = CStoreGetOptions(foreignTableId);
-
 	foreignScan = (ForeignScan *) scanState->ss.ps.plan;
 	foreignPrivateList = (List *) foreignScan->fdw_private;
 	whereClauseList = foreignScan->scan.plan.qual;
 
 	columnList = (List *) linitial(foreignPrivateList);
-	readState = CStoreBeginRead(cstoreFdwOptions->filename, tupleDescriptor,
-								columnList, whereClauseList);
+	readState = CStoreBeginRead(currentRelation, tupleDescriptor, columnList,
+								whereClauseList);
 
 	scanState->fdw_state = (void *) readState;
 }
@@ -1990,19 +1942,7 @@ CStoreAnalyzeForeignTable(Relation relation,
 						  AcquireSampleRowsFunc *acquireSampleRowsFunc,
 						  BlockNumber *totalPageCount)
 {
-	Oid foreignTableId = RelationGetRelid(relation);
-	CStoreFdwOptions *cstoreFdwOptions = CStoreGetOptions(foreignTableId);
-	struct stat statBuffer;
-
-	int statResult = stat(cstoreFdwOptions->filename, &statBuffer);
-	if (statResult < 0)
-	{
-		ereport(ERROR, (errcode_for_file_access(),
-						errmsg("could not stat file \"%s\": %m",
-							   cstoreFdwOptions->filename)));
-	}
-
-	(*totalPageCount) = PageCount(cstoreFdwOptions->filename);
+	(*totalPageCount) = PageCount(relation);
 	(*acquireSampleRowsFunc) = CStoreAcquireSampleRows;
 
 	return true;
@@ -2254,13 +2194,13 @@ CStoreBeginForeignModify(ModifyTableState *modifyTableState,
 	cstoreFdwOptions = CStoreGetOptions(foreignTableOid);
 	tupleDescriptor = RelationGetDescr(relationInfo->ri_RelationDesc);
 
-	writeState = CStoreBeginWrite(cstoreFdwOptions->filename,
+	writeState = CStoreBeginWrite(relation,
 								  cstoreFdwOptions->compressionType,
 								  cstoreFdwOptions->stripeRowCount,
 								  cstoreFdwOptions->blockRowCount,
+								  cstoreFdwOptions->logging,
 								  tupleDescriptor);
 
-	writeState->relation = relation;
 	relationInfo->ri_FdwState = (void *) writeState;
 }
 
@@ -2304,7 +2244,7 @@ CStoreEndForeignModify(EState *executorState, ResultRelInfo *relationInfo)
 		Relation relation = writeState->relation;
 
 		CStoreEndWrite(writeState);
-		heap_close(relation, ShareUpdateExclusiveLock);
+		heap_close(relation, NoLock);
 	}
 }
 

@@ -1,4 +1,4 @@
-/* cstore_fdw/cstore_fdw--1.6.sql */
+/* cstore_fdw/cstore_fdw--2.0.sql */
 
 -- complain if script is sourced in psql, rather than via CREATE EXTENSION
 \echo Use "CREATE EXTENSION cstore_fdw" to load this file. \quit
@@ -40,16 +40,17 @@ CREATE OR REPLACE FUNCTION cstore_drop_trigger()
 	RETURNS event_trigger
 	LANGUAGE plpgsql
 	AS $csdt$
-DECLARE v_obj record;
+DECLARE dropped_object record;
 BEGIN
-	FOR v_obj IN SELECT * FROM pg_event_trigger_dropped_objects() LOOP
+	FOR dropped_object IN SELECT * FROM pg_event_trigger_dropped_objects() LOOP
 
-		IF v_obj.object_type NOT IN ('table', 'foreign table') THEN
+		IF dropped_object.object_type <> 'foreign table' THEN
 			CONTINUE;
 		END IF;
 
-		PERFORM public.cstore_clean_table_resources(v_obj.objid);
-
+		IF EXISTS(SELECT * FROM pg_catalog.pg_cstore_tables WHERE logicalrelid = dropped_object.objid) THEN
+			PERFORM public.cstore_clean_table_resources(dropped_object.objid);
+		END IF;
 	END LOOP;
 END;
 $csdt$;
@@ -57,4 +58,7 @@ $csdt$;
 CREATE EVENT TRIGGER cstore_drop_event
     ON SQL_DROP
     EXECUTE PROCEDURE cstore_drop_trigger();
+
+CREATE TABLE public.pg_cstore_tables (logicalrelid regclass PRIMARY KEY, filenode oid);
+ALTER TABLE public.pg_cstore_tables SET SCHEMA pg_catalog;
 
