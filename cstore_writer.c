@@ -19,18 +19,29 @@
 #include "cstore_metadata_serialization.h"
 
 #include <sys/stat.h>
+#include "access/heapam.h"
+#include "access/heapam_xlog.h"
 #include "access/nbtree.h"
 #include "catalog/pg_collation.h"
+#include "catalog/storage_xlog.h"
 #include "commands/defrem.h"
+#include "miscadmin.h"
 #include "optimizer/var.h"
 #include "port.h"
-#include "storage/fd.h"
+#include "storage/smgr.h"
 #include "utils/memutils.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 
+#if PG_VERSION_NUM >= 90400
+#define LOG_NEWPAGE_BUFFER(buffer) log_newpage_buffer(buffer, true)
+#else
+#define LOG_NEWPAGE_BUFFER(buffer) log_newpage_buffer(buffer)
+#endif
 
-static void CStoreWriteFooter(StringInfo footerFileName, TableFooter *tableFooter);
+static void EnsureFooterForkExists(Relation relation, bool logging);
+static void CStoreWriteFooter(TableFooter *tableFooter, Relation relation,
+							  bool loggingEnabled);
 static StripeBuffers * CreateEmptyStripeBuffers(uint32 stripeMaxRowCount,
 												uint32 blockRowCount,
 												uint32 columnCount);
@@ -55,66 +66,43 @@ static void UpdateBlockSkipNodeMinMax(ColumnBlockSkipNode *blockSkipNode,
 static Datum DatumCopy(Datum datum, bool datumTypeByValue, int datumTypeLength);
 static void AppendStripeMetadata(TableFooter *tableFooter,
 								 StripeMetadata stripeMetadata);
-static void WriteToFile(FILE *file, void *data, uint32 dataLength);
-static void SyncAndCloseFile(FILE *file);
+static void WriteToFile(TableWriteState *writeState, void *data, uint32 dataLength);
 static StringInfo CopyStringInfo(StringInfo sourceString);
 
 
 /*
  * CStoreBeginWrite initializes a cstore data load operation and returns a table
  * handle. This handle should be used for adding the row values and finishing the
- * data load operation. If the cstore footer file already exists, we read the
+ * data load operation. If the cstore footer data already exists, we read the
  * footer and then seek to right after the last stripe  where the new stripes
  * will be added.
  */
 TableWriteState *
-CStoreBeginWrite(const char *filename, CompressionType compressionType,
+CStoreBeginWrite(Relation relation, CompressionType compressionType,
 				 uint64 stripeMaxRowCount, uint32 blockRowCount,
-				 TupleDesc tupleDescriptor)
+				 bool logging, TupleDesc tupleDescriptor)
 {
 	TableWriteState *writeState = NULL;
-	FILE *tableFile = NULL;
-	StringInfo tableFooterFilename = NULL;
 	TableFooter *tableFooter = NULL;
 	FmgrInfo **comparisonFunctionArray = NULL;
 	MemoryContext stripeWriteContext = NULL;
 	uint64 currentFileOffset = 0;
 	uint32 columnCount = 0;
 	uint32 columnIndex = 0;
-	struct stat statBuffer;
-	int statResult = 0;
 	bool *columnMaskArray = NULL;
 	ColumnBlockData **blockData = NULL;
+	int32 pageDataSize = CSTORE_PAGE_DATA_SIZE;
+	int32 blockNumber = 0;
 
-	tableFooterFilename = makeStringInfo();
-	appendStringInfo(tableFooterFilename, "%s%s", filename, CSTORE_FOOTER_FILE_SUFFIX);
+	EnsureFooterForkExists(relation, logging);
 
-	statResult = stat(tableFooterFilename->data, &statBuffer);
-	if (statResult < 0)
+	tableFooter = CStoreReadFooter(relation);
+
+	if (tableFooter == NULL)
 	{
-		tableFile = AllocateFile(filename, "w");
-		if (tableFile == NULL)
-		{
-			ereport(ERROR, (errcode_for_file_access(),
-							errmsg("could not open file \"%s\" for writing: %m",
-								   filename)));
-		}
-
 		tableFooter = palloc0(sizeof(TableFooter));
 		tableFooter->blockRowCount = blockRowCount;
 		tableFooter->stripeMetadataList = NIL;
-	}
-	else
-	{
-		tableFile = AllocateFile(filename, "r+");
-		if (tableFile == NULL)
-		{
-			ereport(ERROR, (errcode_for_file_access(),
-							errmsg("could not open file \"%s\" for writing: %m",
-								   filename)));
-		}
-
-		tableFooter = CStoreReadFooter(tableFooterFilename);
 	}
 
 	/*
@@ -125,7 +113,6 @@ CStoreBeginWrite(const char *filename, CompressionType compressionType,
 	{
 		StripeMetadata *lastStripe = NULL;
 		uint64 lastStripeSize = 0;
-		int fseekResult = 0;
 
 		lastStripe = llast(tableFooter->stripeMetadataList);
 		lastStripeSize += lastStripe->skipListLength;
@@ -133,15 +120,9 @@ CStoreBeginWrite(const char *filename, CompressionType compressionType,
 		lastStripeSize += lastStripe->footerLength;
 
 		currentFileOffset = lastStripe->fileOffset + lastStripeSize;
-
-		errno = 0;
-		fseekResult = fseeko(tableFile, currentFileOffset, SEEK_SET);
-		if (fseekResult != 0)
-		{
-			ereport(ERROR, (errcode_for_file_access(),
-							errmsg("could not seek in file \"%s\": %m", filename)));
-		}
 	}
+
+	blockNumber = currentFileOffset / pageDataSize;
 
 	/* get comparison function pointers for each of the columns */
 	columnCount = tupleDescriptor->natts;
@@ -178,11 +159,10 @@ CStoreBeginWrite(const char *filename, CompressionType compressionType,
 	blockData = CreateEmptyBlockDataArray(columnCount, columnMaskArray, blockRowCount);
 
 	writeState = palloc0(sizeof(TableWriteState));
-	writeState->tableFile = tableFile;
-	writeState->tableFooterFilename = tableFooterFilename;
 	writeState->tableFooter = tableFooter;
 	writeState->compressionType = compressionType;
 	writeState->stripeMaxRowCount = stripeMaxRowCount;
+	writeState->logging = logging;
 	writeState->tupleDescriptor = tupleDescriptor;
 	writeState->currentFileOffset = currentFileOffset;
 	writeState->comparisonFunctionArray = comparisonFunctionArray;
@@ -191,8 +171,37 @@ CStoreBeginWrite(const char *filename, CompressionType compressionType,
 	writeState->stripeWriteContext = stripeWriteContext;
 	writeState->blockDataArray = blockData;
 	writeState->compressionBuffer = NULL;
+	writeState->activeBlockNumber = blockNumber;
+	writeState->relation = relation;
 
 	return writeState;
+}
+
+
+/*
+ * EnsureFooterForkExists checks if footer fork exists for writing data, and
+ * creates if it is not present. Relation must be previously opened with
+ * exclusive lock (AccessExclusive or ShareUpdateExclusive).
+ */
+static void
+EnsureFooterForkExists(Relation relation, bool logging)
+{
+	SMgrRelation srel = NULL;
+
+	RelationOpenSmgr(relation);
+	srel = (SMgrRelation) relation->rd_smgr;
+
+	if (!smgrexists(srel, FOOTER_FORKNUM))
+	{
+		smgrcreate(srel, FOOTER_FORKNUM, false);
+
+		if (logging)
+		{
+			log_smgrcreate(&srel->smgr_rnode.node, FOOTER_FORKNUM);
+		}
+
+		Assert(smgrexists(srel, FOOTER_FORKNUM));
+	}
 }
 
 
@@ -310,57 +319,34 @@ CStoreWriteRow(TableWriteState *writeState, Datum *columnValues, bool *columnNul
 
 
 /*
- * CStoreEndWrite finishes a cstore data load operation. If we have an unflushed
- * stripe, we flush it. Then, we sync and close the cstore data file. Last, we
- * flush the footer to a temporary file, and atomically rename this temporary
- * file to the original footer file.
+ * CStoreEndWrite finishes a cstore data load operation. If there is an unflushed
+ * stripe, it is flushed first.
  */
 void
 CStoreEndWrite(TableWriteState *writeState)
 {
-	StringInfo tableFooterFilename = NULL;
-	StringInfo tempTableFooterFileName = NULL;
-	int renameResult = 0;
 	int columnCount = writeState->tupleDescriptor->natts;
 	StripeBuffers *stripeBuffers = writeState->stripeBuffers;
+	MemoryContext oldContext = MemoryContextSwitchTo(writeState->stripeWriteContext);
 
 	if (stripeBuffers != NULL)
 	{
-		MemoryContext oldContext = MemoryContextSwitchTo(writeState->stripeWriteContext);
-
 		StripeMetadata stripeMetadata = FlushStripe(writeState);
-		MemoryContextReset(writeState->stripeWriteContext);
 
+		/* tableFooter lives in 'higher' memory context */
 		MemoryContextSwitchTo(oldContext);
 		AppendStripeMetadata(writeState->tableFooter, stripeMetadata);
+		MemoryContextSwitchTo(writeState->stripeWriteContext);
 	}
 
-	SyncAndCloseFile(writeState->tableFile);
+	CStoreWriteFooter(writeState->tableFooter, writeState->relation,
+					  writeState->logging);
 
-	tableFooterFilename = writeState->tableFooterFilename;
-	tempTableFooterFileName = makeStringInfo();
-	appendStringInfo(tempTableFooterFileName, "%s%s", tableFooterFilename->data,
-					 CSTORE_TEMP_FILE_SUFFIX);
-
-	CStoreWriteFooter(tempTableFooterFileName, writeState->tableFooter);
-
-	renameResult = rename(tempTableFooterFileName->data, tableFooterFilename->data);
-	if (renameResult != 0)
-	{
-		ereport(ERROR, (errcode_for_file_access(),
-						errmsg("could not rename file \"%s\" to \"%s\": %m",
-							   tempTableFooterFileName->data,
-							   tableFooterFilename->data)));
-	}
-
-	pfree(tempTableFooterFileName->data);
-	pfree(tempTableFooterFileName);
+	MemoryContextSwitchTo(oldContext);
 
 	MemoryContextDelete(writeState->stripeWriteContext);
 	list_free_deep(writeState->tableFooter->stripeMetadataList);
 	pfree(writeState->tableFooter);
-	pfree(writeState->tableFooterFilename->data);
-	pfree(writeState->tableFooterFilename);
 	pfree(writeState->comparisonFunctionArray);
 	FreeColumnBlockDataArray(writeState->blockDataArray, columnCount);
 	pfree(writeState);
@@ -368,46 +354,194 @@ CStoreEndWrite(TableWriteState *writeState)
 
 
 /*
- * CStoreWriteFooter writes the given footer to given file. First, the function
- * serializes and writes the footer to the file. Then, the function serializes
- * and writes the postscript. Then, the function writes the postscript size as
- * the last byte of the file. Last, the function syncs and closes the footer file.
+ * CStoreWriteFooter writes the given footer data to relation footer file.
+ * First the function serializes the footer, the postscript, and the the
+ * postscript size as the last byte of the footer data.
+ * After preparing the footer data the function reads the current footer
+ * metadata to decide where to write to make sure that the current footer data
+ * is not overwritten. It writes the footer data to correct place and finally
+ * updates footer metadata about where footer data is stored. Reclamation of
+ * created StringInfo buffers are performed in caller function's memory context.
  */
 static void
-CStoreWriteFooter(StringInfo tableFooterFilename, TableFooter *tableFooter)
+CStoreWriteFooter(TableFooter *tableFooter, Relation relation, bool loggingEnabled)
 {
-	FILE *tableFooterFile = NULL;
 	StringInfo tableFooterBuffer = NULL;
 	StringInfo postscriptBuffer = NULL;
 	uint8 postscriptSize = 0;
+	BlockNumber forkBlockCount = 0;
+	BlockNumber footerDataBlockCount = 0;
+	BlockNumber blockIndex = 0;
+	StringInfo wholeFooter = makeStringInfo();
+	int32 dataLength = 0;
+	int32 dataOffset = 0;
+	const int32 blockDataSize = CSTORE_PAGE_DATA_SIZE;
+	BlockNumber footerHeaderBlockNumber = InvalidBlockNumber;
+	Buffer footerHeaderBuffer = InvalidBuffer;
+	Page footerHeaderPage = NULL;
+	PageHeader footerHeaderBufferPageHeader = NULL;
+	char *footerHeaderPageContent = NULL;
+	uint32 existingFoooterStartingBlock = InvalidBlockNumber;
+	uint32 existingFooterBlockCount = InvalidBlockNumber;
+	uint32 startingBlock = InvalidBlockNumber;
+	StringInfo tableFooterMetadata = NULL;
 
-	tableFooterFile = AllocateFile(tableFooterFilename->data, PG_BINARY_W);
-	if (tableFooterFile == NULL)
-	{
-		ereport(ERROR, (errcode_for_file_access(),
-						errmsg("could not open file \"%s\" for writing: %m",
-							   tableFooterFilename->data)));
-	}
+	/* reserve space for storing length of the footer data */
+	appendBinaryStringInfo(wholeFooter, (const char *) &dataLength, sizeof(int32));
 
 	/* write the footer */
 	tableFooterBuffer = SerializeTableFooter(tableFooter);
-	WriteToFile(tableFooterFile, tableFooterBuffer->data, tableFooterBuffer->len);
+	appendBinaryStringInfo(wholeFooter, tableFooterBuffer->data, tableFooterBuffer->len);
 
 	/* write the postscript */
 	postscriptBuffer = SerializePostScript(tableFooterBuffer->len);
-	WriteToFile(tableFooterFile, postscriptBuffer->data, postscriptBuffer->len);
+	appendBinaryStringInfo(wholeFooter, postscriptBuffer->data, postscriptBuffer->len);
 
 	/* write the 1-byte postscript size */
 	Assert(postscriptBuffer->len < CSTORE_POSTSCRIPT_SIZE_MAX);
 	postscriptSize = postscriptBuffer->len;
-	WriteToFile(tableFooterFile, &postscriptSize, CSTORE_POSTSCRIPT_SIZE_LENGTH);
+	appendBinaryStringInfo(wholeFooter, (char *) &postscriptSize,
+						   CSTORE_POSTSCRIPT_SIZE_LENGTH);
 
-	SyncAndCloseFile(tableFooterFile);
+	dataLength = wholeFooter->len;
 
-	pfree(tableFooterBuffer->data);
-	pfree(tableFooterBuffer);
-	pfree(postscriptBuffer->data);
-	pfree(postscriptBuffer);
+	/* store the correct footer data length */
+	memcpy(wholeFooter->data, (const char *) &dataLength, sizeof(int32));
+
+	footerDataBlockCount = (dataLength - 1) / blockDataSize + 1;
+
+	forkBlockCount = RelationGetNumberOfBlocksInFork(relation, FOOTER_FORKNUM);
+	if (forkBlockCount > 0)
+	{
+		footerHeaderBlockNumber = 0;
+	}
+	else
+	{
+		footerHeaderBlockNumber = P_NEW;
+	}
+
+	footerHeaderBuffer = ReadBufferExtended(relation, FOOTER_FORKNUM,
+											footerHeaderBlockNumber, RBM_NORMAL,
+											NULL);
+
+	LockBuffer(footerHeaderBuffer, BUFFER_LOCK_EXCLUSIVE);
+
+	footerHeaderPage = BufferGetPage(footerHeaderBuffer);
+	footerHeaderBufferPageHeader = (PageHeader) footerHeaderPage;
+	footerHeaderPageContent = PageGetContents(footerHeaderPage);
+
+	/*
+	 * if we have nothing to read, we start from the first available buffer (1),
+	 * otherwise we first read metadata header buffer and compute the starting buffer
+	 * number.
+	 */
+	if (forkBlockCount == 0)
+	{
+		startingBlock = 1;
+	}
+	else
+	{
+		uint32 footerHeaderDataLength =
+			footerHeaderBufferPageHeader->pd_lower - SizeOfPageHeaderData;
+		DeserializeTableFooterMetadata(footerHeaderPageContent,
+									   footerHeaderDataLength,
+									   &existingFoooterStartingBlock,
+									   &existingFooterBlockCount);
+
+		/*
+		 * We here we decide where to start writing new table footer metadata.
+		 * If deserialization fail for any reason starting block is set to an
+		 * invalid starting block number (0).
+		 *
+		 * If there is a parsing error we start from the first buffer (1). If
+		 * it is fine we check if there are enough empty buffers to accommodate
+		 * all blocks of table footer metadata and set new starting buffer to
+		 * first buffer (1). If there are not enough buffers we start writing
+		 * after the all used buffers.
+		 */
+		if (existingFoooterStartingBlock == 0)
+		{
+			startingBlock = 1;
+		}
+		else if (footerDataBlockCount < existingFoooterStartingBlock)
+		{
+			startingBlock = 1;
+		}
+		else
+		{
+			startingBlock = existingFoooterStartingBlock + existingFooterBlockCount;
+		}
+	}
+
+	dataOffset = 0;
+
+	for (blockIndex = 0; blockIndex < footerDataBlockCount; blockIndex++)
+	{
+		Buffer buffer = InvalidBuffer;
+		BlockNumber blockNumber = blockIndex + startingBlock;
+		Page page;
+		PageHeader pageHeader = NULL;
+		char *pageData = NULL;
+		int copySize = blockDataSize;
+
+		if (blockNumber >= forkBlockCount)
+		{
+			blockNumber = P_NEW;
+		}
+
+		buffer = ReadBufferExtended(relation, FOOTER_FORKNUM, blockNumber,
+									RBM_NORMAL, NULL);
+
+		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+
+		START_CRIT_SECTION();
+		page = BufferGetPage(buffer);
+
+		PageInit(page, BLCKSZ, 0);
+		pageData = PageGetContents(page);
+
+		if ((dataLength - dataOffset) <= blockDataSize)
+		{
+			copySize = dataLength - dataOffset;
+		}
+
+		pageHeader = (PageHeader) page;
+		pageHeader->pd_lower = SizeOfPageHeaderData + copySize;
+		memcpy(pageData, wholeFooter->data + dataOffset, copySize);
+
+		MarkBufferDirty(buffer);
+
+		if (loggingEnabled)
+		{
+			LOG_NEWPAGE_BUFFER(buffer);
+		}
+
+		END_CRIT_SECTION();
+
+		UnlockReleaseBuffer(buffer);
+
+		dataOffset += copySize;
+	}
+
+	/* all table footer is written, update the header page */
+	tableFooterMetadata = SerializeTableFooterMetadata(startingBlock,
+													   footerDataBlockCount);
+
+	START_CRIT_SECTION();
+	PageInit(footerHeaderPage, BLCKSZ, 0);
+	memcpy(footerHeaderPageContent, tableFooterMetadata->data, tableFooterMetadata->len);
+	footerHeaderBufferPageHeader->pd_lower = SizeOfPageHeaderData +
+											 tableFooterMetadata->len;
+	MarkBufferDirty(footerHeaderBuffer);
+
+	if (loggingEnabled)
+	{
+		LOG_NEWPAGE_BUFFER(footerHeaderBuffer);
+	}
+
+	END_CRIT_SECTION();
+
+	UnlockReleaseBuffer(footerHeaderBuffer);
 }
 
 
@@ -499,7 +633,6 @@ FlushStripe(TableWriteState *writeState)
 	uint32 columnIndex = 0;
 	uint32 blockIndex = 0;
 	TableFooter *tableFooter = writeState->tableFooter;
-	FILE *tableFile = writeState->tableFile;
 	StripeBuffers *stripeBuffers = writeState->stripeBuffers;
 	StripeSkipList *stripeSkipList = writeState->stripeSkipList;
 	ColumnBlockSkipNode **columnSkipNodeArray = stripeSkipList->blockSkipNodeArray;
@@ -570,7 +703,7 @@ FlushStripe(TableWriteState *writeState)
 	for (columnIndex = 0; columnIndex < columnCount; columnIndex++)
 	{
 		StringInfo skipListBuffer = skipListBufferArray[columnIndex];
-		WriteToFile(tableFile, skipListBuffer->data, skipListBuffer->len);
+		WriteToFile(writeState, skipListBuffer->data, skipListBuffer->len);
 	}
 
 	/* then, we flush the data buffers */
@@ -585,7 +718,7 @@ FlushStripe(TableWriteState *writeState)
 					columnBuffers->blockBuffersArray[blockIndex];
 			StringInfo existsBuffer = blockBuffers->existsBuffer;
 
-			WriteToFile(tableFile, existsBuffer->data, existsBuffer->len);
+			WriteToFile(writeState, existsBuffer->data, existsBuffer->len);
 		}
 
 		for (blockIndex = 0; blockIndex < stripeSkipList->blockCount; blockIndex++)
@@ -594,12 +727,12 @@ FlushStripe(TableWriteState *writeState)
 					columnBuffers->blockBuffersArray[blockIndex];
 			StringInfo valueBuffer = blockBuffers->valueBuffer;
 
-			WriteToFile(tableFile, valueBuffer->data, valueBuffer->len);
+			WriteToFile(writeState, valueBuffer->data, valueBuffer->len);
 		}
 	}
 
 	/* finally, we flush the footer buffer */
-	WriteToFile(tableFile, stripeFooterBuffer->data, stripeFooterBuffer->len);
+	WriteToFile(writeState, stripeFooterBuffer->data, stripeFooterBuffer->len);
 
 	/* set stripe metadata */
 	for (columnIndex = 0; columnIndex < columnCount; columnIndex++)
@@ -924,71 +1057,99 @@ AppendStripeMetadata(TableFooter *tableFooter, StripeMetadata stripeMetadata)
 }
 
 
-/* Writes the given data to the given file pointer and checks for errors. */
+/*
+ * WriteToFile appends provided data to the active page. If data does
+ * not fit into remaining space in page, a new page is allocated until whole
+ * data is written.
+ */
 static void
-WriteToFile(FILE *file, void *data, uint32 dataLength)
+WriteToFile(TableWriteState *writeState, void *data, uint32 dataLength)
 {
-	int writeResult = 0;
-	int errorResult = 0;
+	int32 blockNumber = writeState->activeBlockNumber;
+	int dataOffset = 0;
+	Relation relation = writeState->relation;
+	BlockNumber blockCount = RelationGetNumberOfBlocksInFork(relation, DATA_FORKNUM);
+	BufferAccessStrategy strategy = GetAccessStrategy(BAS_BULKWRITE);
 
 	if (dataLength == 0)
 	{
 		return;
 	}
 
-	errno = 0;
-	writeResult = fwrite(data, dataLength, 1, file);
-	if (writeResult != 1)
+	while (dataOffset < dataLength)
 	{
-		ereport(ERROR, (errcode_for_file_access(),
-						errmsg("could not write file: %m")));
-	}
+		Page page = NULL;
+		char *pageData = NULL;
+		Buffer buffer = InvalidBuffer;
+		int32 copySize = 0;
+		int pageOffset = 0;
+		int remainingCapacity = 0;
+		PageHeader pageHeader = NULL;
 
-	errorResult = ferror(file);
-	if (errorResult != 0)
-	{
-		ereport(ERROR, (errcode_for_file_access(),
-						errmsg("error in file: %m")));
-	}
-}
+		if (blockNumber >= blockCount)
+		{
+			blockNumber = P_NEW;
+		}
+
+		buffer = ReadBufferExtended(relation, DATA_FORKNUM, blockNumber, RBM_NORMAL,
+									strategy);
+
+		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
+		page = BufferGetPage(buffer);
+		pageHeader = (PageHeader) page;
+
+		START_CRIT_SECTION();
+
+		if (blockNumber == P_NEW)
+		{
+			PageInit(page, BLCKSZ, 0);
+			blockNumber = BufferGetBlockNumber(buffer);
+		}
+
+		Assert(pageHeader->pd_lower > 0);
+
+		pageData = PageGetContents(page);
 
 
-/* Flushes, syncs, and closes the given file pointer and checks for errors. */
-static void
-SyncAndCloseFile(FILE *file)
-{
-	int flushResult = 0;
-	int syncResult = 0;
-	int errorResult = 0;
-	int freeResult = 0;
+		remainingCapacity = pageHeader->pd_upper - pageHeader->pd_lower;
+		copySize = dataLength - dataOffset;
 
-	errno = 0;
-	flushResult = fflush(file);
-	if (flushResult != 0)
-	{
-		ereport(ERROR, (errcode_for_file_access(),
-						errmsg("could not flush file: %m")));
-	}
+		if (remainingCapacity < copySize)
+		{
+			copySize = remainingCapacity;
+		}
 
-	syncResult = pg_fsync(fileno(file));
-	if (syncResult != 0)
-	{
-		ereport(ERROR, (errcode_for_file_access(),
-						errmsg("could not sync file: %m")));
-	}
+		pageOffset = (pageHeader->pd_lower) - SizeOfPageHeaderData;
 
-	errorResult = ferror(file);
-	if (errorResult != 0)
-	{
-		ereport(ERROR, (errcode_for_file_access(),
-						errmsg("error in file: %m")));
-	}
+		memcpy(pageData + pageOffset, (char *) data + dataOffset, copySize);
 
-	freeResult = FreeFile(file);
-	if (freeResult != 0)
-	{
-		ereport(ERROR, (errcode_for_file_access(),
-						errmsg("could not close file: %m")));
+		dataOffset += copySize;
+
+		pageHeader->pd_lower += copySize;
+		if (pageHeader->pd_lower == pageHeader->pd_upper)
+		{
+			PageSetFull(page);
+		}
+
+		MarkBufferDirty(buffer);
+
+		if (writeState->logging)
+		{
+			LOG_NEWPAGE_BUFFER(buffer);
+		}
+
+		END_CRIT_SECTION();
+
+		UnlockReleaseBuffer(buffer);
+
+		/* store last written block number to write state */
+		writeState->activeBlockNumber = blockNumber;
+
+		/*
+		 * Incrementing blockNumber is necessary for next iteration of the loop
+		 * when data to be copied can not fit into active block.
+		 */
+		blockNumber++;
 	}
 }
 
