@@ -32,7 +32,9 @@ endif
 # example: /usr/local/pgsql/bin/pg_config or /usr/lib/postgresql/9.3/bin/pg_config
 #
 
-PG_CONFIG = pg_config
+# PG_CONFIG = pg_config
+PG_CONFIG = /usr/local/pgsql/bin/pg_config
+
 PGXS := $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
 

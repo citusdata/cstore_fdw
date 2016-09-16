@@ -28,6 +28,7 @@
 #include "optimizer/var.h"
 #include "port.h"
 #include "storage/fd.h"
+#include "storage/smgr.h"
 #include "utils/memutils.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
@@ -91,10 +92,11 @@ static uint64 StripeRowCount(FILE *tableFile, StripeMetadata *stripeMetadata);
  */
 TableReadState *
 CStoreBeginRead(const char *filename, TupleDesc tupleDescriptor,
-				List *projectedColumnList, List *whereClauseList)
+				List *projectedColumnList, List *whereClauseList, Relation relation)
 {
 	TableReadState *readState = NULL;
 	TableFooter *tableFooter = NULL;
+	TableFooter *newTableFooter = NULL;
 	FILE *tableFile = NULL;
 	MemoryContext stripeReadContext = NULL;
 	uint32 columnCount = 0;
@@ -105,6 +107,7 @@ CStoreBeginRead(const char *filename, TupleDesc tupleDescriptor,
 	appendStringInfo(tableFooterFilename, "%s%s", filename, CSTORE_FOOTER_FILE_SUFFIX);
 
 	tableFooter = CStoreReadFooter(tableFooterFilename);
+	newTableFooter = CStoreReadFooterFromInternalStorage(tableFooterFilename, relation);
 
 	pfree(tableFooterFilename->data);
 	pfree(tableFooterFilename);
@@ -219,6 +222,72 @@ CStoreReadFooter(StringInfo tableFooterFilename)
 	return tableFooter;
 }
 
+
+TableFooter *
+CStoreReadFooterFromInternalStorage(StringInfo tableFooterFilename, Relation relation)
+{
+	TableFooter *tableFooter = NULL;
+	uint64 footerOffset = 0;
+	uint64 footerLength = 0;
+	StringInfo postscriptBuffer = NULL;
+	uint64 postscriptSizeOffset = 0;
+	uint8 postscriptSize = 0;
+	uint64 postscriptOffset = 0;
+	StringInfo footerBuffer = NULL;
+	SMgrRelation srel = NULL;
+	BackendId	backendId = InvalidBackendId;
+	char *relFileData = palloc0(BLCKSZ);
+	int32 relFileLength = 0;
+	BlockNumber blockCount = 0;
+	char *pageDataPayload = NULL;
+	const int headerLength = sizeof(int32);
+
+
+	srel = smgropen(relation->rd_node, backendId);
+	Assert(smgrexists(srel, MAIN_FORKNUM));
+
+	blockCount = smgrnblocks(srel, MAIN_FORKNUM);
+	ereport(WARNING, (errmsg("Found %d blocks in main fork", (int) blockCount)));
+
+	smgrread(srel, MAIN_FORKNUM, 0, relFileData);
+	memcpy(&relFileLength, relFileData, headerLength);
+	smgrclose(srel);
+
+	if (relFileLength < CSTORE_POSTSCRIPT_SIZE_LENGTH)
+	{
+		ereport(ERROR, (errmsg("invalid cstore file")));
+	}
+
+
+	pageDataPayload = relFileData + headerLength;
+
+	postscriptSizeOffset = headerLength + relFileLength - CSTORE_POSTSCRIPT_SIZE_LENGTH;
+	memcpy(&postscriptSize, relFileData + postscriptSizeOffset, CSTORE_POSTSCRIPT_SIZE_LENGTH);
+	if (postscriptSize + CSTORE_POSTSCRIPT_SIZE_LENGTH > relFileLength)
+	{
+		ereport(ERROR, (errmsg("invalid postscript size")));
+	}
+
+	postscriptOffset = postscriptSizeOffset - postscriptSize;
+
+	postscriptBuffer = makeStringInfo();
+	appendBinaryStringInfo(postscriptBuffer, relFileData + postscriptOffset, postscriptSize );
+
+	DeserializePostScript(postscriptBuffer, &footerLength);
+	if (footerLength + postscriptSize + CSTORE_POSTSCRIPT_SIZE_LENGTH > relFileLength)
+	{
+		ereport(ERROR, (errmsg("invalid footer size")));
+	}
+
+	footerOffset = postscriptOffset - footerLength;
+	footerBuffer = makeStringInfo();
+	appendBinaryStringInfo(footerBuffer, relFileData + footerOffset, footerLength);
+
+	tableFooter = DeserializeTableFooter(footerBuffer);
+
+	pfree(relFileData);
+	return tableFooter;
+}
 
 /*
  * CStoreReadNextRow tries to read a row from the cstore file. On success, it sets

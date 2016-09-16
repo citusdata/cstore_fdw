@@ -54,6 +54,7 @@
 #include "utils/rel.h"
 #include "utils/tqual.h"
 
+#include "catalog/storage.h"
 
 /* local functions forward declarations */
 static void CStoreProcessUtility(Node *parseTree, const char *queryString,
@@ -77,6 +78,7 @@ static List * FindCStoreTables(List *tableList);
 static void TruncateCStoreTables(List *cstoreTableList);
 static void DeleteCStoreTableFiles(char *filename);
 static void InitializeCStoreTableFile(Oid relationId, Relation relation);
+static void InitializeCStoreInternalStorage(Oid relationId, Relation relation);
 static bool CStoreTable(Oid relationId);
 static bool DistributedTable(Oid relationId);
 static bool DistributedWorkerCopy(CopyStmt *copyStatement);
@@ -206,6 +208,7 @@ cstore_ddl_event_end_trigger(PG_FUNCTION_ARGS)
 		Oid relationId = RangeVarGetRelid(createStatement->base.relation,
 										  AccessShareLock, false);
 		Relation relation = heap_open(relationId, AccessExclusiveLock);
+		InitializeCStoreInternalStorage(relationId, relation);
 		InitializeCStoreTableFile(relationId, relation);
 		heap_close(relation, AccessExclusiveLock);
 	}
@@ -470,6 +473,7 @@ CopyIntoCStoreTable(const CopyStmt *copyStatement, const char *queryString)
 								  cstoreFdwOptions->stripeRowCount,
 								  cstoreFdwOptions->blockRowCount,
 								  tupleDescriptor);
+	writeState->relation = relation;
 
 	while (nextRowFound)
 	{
@@ -740,9 +744,17 @@ static void InitializeCStoreTableFile(Oid relationId, Relation relation)
 	writeState = CStoreBeginWrite(cstoreFdwOptions->filename,
 			cstoreFdwOptions->compressionType, cstoreFdwOptions->stripeRowCount,
 			cstoreFdwOptions->blockRowCount, tupleDescriptor);
+
+	writeState->relation = relation;
+
 	CStoreEndWrite(writeState);
 }
 
+
+static void InitializeCStoreInternalStorage(Oid relationId, Relation relation)
+{
+	RelationCreateStorage(relation->rd_node, RELPERSISTENCE_PERMANENT);
+}
 
 /*
  * CStoreTable checks if the given table name belongs to a foreign columnar store
@@ -1698,6 +1710,7 @@ CStoreBeginForeignScan(ForeignScanState *scanState, int executorFlags)
 	ForeignScan *foreignScan = NULL;
 	List *foreignPrivateList = NIL;
 	List *whereClauseList = NIL;
+	Relation currentRelation = scanState->ss.ss_currentRelation;
 
 	/* if Explain with no Analyze, do nothing */
 	if (executorFlags & EXEC_FLAG_EXPLAIN_ONLY)
@@ -1705,7 +1718,7 @@ CStoreBeginForeignScan(ForeignScanState *scanState, int executorFlags)
 		return;
 	}
 
-	foreignTableId = RelationGetRelid(scanState->ss.ss_currentRelation);
+	foreignTableId = RelationGetRelid(currentRelation);
 	cstoreFdwOptions = CStoreGetOptions(foreignTableId);
 
 	foreignScan = (ForeignScan *) scanState->ss.ps.plan;
@@ -1714,7 +1727,7 @@ CStoreBeginForeignScan(ForeignScanState *scanState, int executorFlags)
 
 	columnList = (List *) linitial(foreignPrivateList);
 	readState = CStoreBeginRead(cstoreFdwOptions->filename, tupleDescriptor,
-								columnList, whereClauseList);
+								columnList, whereClauseList, currentRelation);
 
 	scanState->fdw_state = (void *) readState;
 }

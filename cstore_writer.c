@@ -25,12 +25,16 @@
 #include "optimizer/var.h"
 #include "port.h"
 #include "storage/fd.h"
+#include "storage/smgr.h"
 #include "utils/memutils.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 
 
 static void CStoreWriteFooter(StringInfo footerFileName, TableFooter *tableFooter);
+static void CStoreWriteFooterToInternalStorage(StringInfo tableFooterFilename,
+											   TableFooter *tableFooter,
+											   Relation relation);
 static StripeBuffers * CreateEmptyStripeBuffers(uint32 stripeMaxRowCount,
 												uint32 blockRowCount,
 												uint32 columnCount);
@@ -343,6 +347,8 @@ CStoreEndWrite(TableWriteState *writeState)
 					 CSTORE_TEMP_FILE_SUFFIX);
 
 	CStoreWriteFooter(tempTableFooterFileName, writeState->tableFooter);
+	CStoreWriteFooterToInternalStorage(tempTableFooterFileName, writeState->tableFooter, writeState->relation);
+
 
 	renameResult = rename(tempTableFooterFileName->data, tableFooterFilename->data);
 	if (renameResult != 0)
@@ -408,6 +414,71 @@ CStoreWriteFooter(StringInfo tableFooterFilename, TableFooter *tableFooter)
 	pfree(tableFooterBuffer);
 	pfree(postscriptBuffer->data);
 	pfree(postscriptBuffer);
+}
+
+
+static void
+CStoreWriteFooterToInternalStorage(StringInfo tableFooterFilename,
+								   TableFooter *tableFooter, Relation relation)
+{
+	StringInfo tableFooterBuffer = NULL;
+	StringInfo postscriptBuffer = NULL;
+	uint8 postscriptSize = 0;
+	SMgrRelation srel;
+	BackendId	backendId = InvalidBackendId;
+	BlockNumber blockCount = 0;
+	StringInfo wholeFooter = makeStringInfo();
+	char *pageData = NULL;
+	int32 dataLength = 0;
+
+
+	srel = smgropen(relation->rd_node, backendId);
+	Assert(smgrexists(srel, MAIN_FORKNUM));
+
+	blockCount = smgrnblocks(srel, MAIN_FORKNUM);
+
+	ereport(WARNING, (errmsg("Found %d blocks in main fork, will truncate", (int) blockCount)));
+	smgrtruncate(srel, MAIN_FORKNUM, blockCount);
+
+	smgrclose(srel);
+	srel = smgropen(relation->rd_node, backendId);
+
+
+	blockCount = smgrnblocks(srel, MAIN_FORKNUM);
+	ereport(WARNING, (errmsg("%d blocks in main fork after truncate", (int) blockCount)));
+
+
+	/* write the footer */
+	tableFooterBuffer = SerializeTableFooter(tableFooter);
+	appendBinaryStringInfo(wholeFooter, tableFooterBuffer->data, tableFooterBuffer->len);
+
+	/* write the postscript */
+	postscriptBuffer = SerializePostScript(tableFooterBuffer->len);
+	appendBinaryStringInfo(wholeFooter, postscriptBuffer->data, postscriptBuffer->len);
+
+	/* write the 1-byte postscript size */
+	Assert(postscriptBuffer->len < CSTORE_POSTSCRIPT_SIZE_MAX);
+	postscriptSize = postscriptBuffer->len;
+	appendBinaryStringInfo(wholeFooter, (char *) &postscriptSize, CSTORE_POSTSCRIPT_SIZE_LENGTH);
+
+	ereport(WARNING, (errmsg("Footer size %d bytes", wholeFooter->len)));
+
+	dataLength = wholeFooter->len;
+
+	pageData = (char *) palloc0(BLCKSZ);
+	memcpy(pageData, &dataLength, sizeof(int32));
+	memcpy(pageData + sizeof(int32), wholeFooter->data, wholeFooter->len);
+	smgrextend(srel, MAIN_FORKNUM, 0, pageData, false);
+	smgrclose(srel);
+
+	pfree(tableFooterBuffer->data);
+	pfree(tableFooterBuffer);
+	pfree(postscriptBuffer->data);
+	pfree(postscriptBuffer);
+
+	pfree(pageData);
+	pfree(wholeFooter->data);
+	pfree(wholeFooter);
 }
 
 

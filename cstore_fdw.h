@@ -329,8 +329,9 @@ extern void CStoreEndWrite(TableWriteState * state);
 
 /* Function declarations for reading from a cstore file */
 extern TableReadState * CStoreBeginRead(const char *filename, TupleDesc tupleDescriptor,
-										List *projectedColumnList, List *qualConditions);
+										List *projectedColumnList, List *qualConditions, Relation relation);
 extern TableFooter * CStoreReadFooter(StringInfo tableFooterFilename);
+extern TableFooter * CStoreReadFooterFromInternalStorage(StringInfo tableFooterFilename, Relation relation);
 extern bool CStoreReadFinished(TableReadState *state);
 extern bool CStoreReadNextRow(TableReadState *state, Datum *columnValues,
 							  bool *columnNulls);
