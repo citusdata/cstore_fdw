@@ -37,6 +37,8 @@ extern StripeFooter * DeserializeStripeFooter(StringInfo buffer);
 extern ColumnBlockSkipNode * DeserializeColumnSkipList(StringInfo buffer,
 													   bool typeByValue, int typeLength,
 													   uint32 blockCount);
-
+extern bool DeserializeTableFooterMetadata(const char *data, uint32 length,
+										   uint32 *startingPage, uint32 *pageCount);
+extern StringInfo SerializeTableFooterMetadata(uint32 startingPage, uint32 pageCount);
 
 #endif   /* CSTORE_SERIALIZATION_H */ 

@@ -40,16 +40,18 @@ CREATE OR REPLACE FUNCTION cstore_drop_trigger()
 	RETURNS event_trigger
 	LANGUAGE plpgsql
 	AS $csdt$
-DECLARE v_obj record;
+DECLARE dropped_object record;
 BEGIN
-	FOR v_obj IN SELECT * FROM pg_event_trigger_dropped_objects() LOOP
+	FOR dropped_object IN SELECT * FROM pg_event_trigger_dropped_objects() LOOP
 
-		IF v_obj.object_type NOT IN ('table', 'foreign table') THEN
+		IF dropped_object.object_type <> 'foreign table' THEN
 			CONTINUE;
 		END IF;
 
-		PERFORM public.cstore_clean_table_resources(v_obj.objid);
-
+		IF EXISTS(SELECT * FROM pg_catalog.pg_cstore_tables WHERE logicalrelid = dropped_object.objid) THEN
+			PERFORM public.cstore_clean_table_resources(dropped_object.objid);
+			PERFORM public.unregister_cstore_table(dropped_object.objid);
+		END IF;
 	END LOOP;
 END;
 $csdt$;
@@ -58,3 +60,37 @@ CREATE EVENT TRIGGER cstore_drop_event
     ON SQL_DROP
     EXECUTE PROCEDURE cstore_drop_trigger();
 
+CREATE TABLE public.pg_cstore_tables (logicalrelid regclass PRIMARY KEY);
+ALTER TABLE public.pg_cstore_tables SET SCHEMA pg_catalog;
+
+CREATE OR REPLACE FUNCTION public.register_cstore_table(table_name oid)
+	RETURNS boolean
+	LANGUAGE plpgsql
+	AS $rct$
+BEGIN
+    IF EXISTS(
+		SELECT fdwname FROM pg_foreign_table ft, pg_foreign_server fs, pg_foreign_data_wrapper fdw
+			WHERE 
+				ft.ftrelid = table_name AND
+				fs.oid = ft.ftserver AND
+				fdw.oid = fs.srvfdw AND
+				fdw.fdwname = 'cstore_fdw'
+				) AND
+		NOT EXISTS(SELECT * FROM pg_cstore_tables WHERE logicalrelid = table_name)
+	THEN
+		INSERT INTO pg_cstore_tables SELECT table_name;
+		RETURN true;
+	END IF;
+
+	return false;
+END;
+$rct$;
+
+CREATE OR REPLACE FUNCTION public.unregister_cstore_table(table_name oid)
+	RETURNS void
+	LANGUAGE plpgsql
+	AS $uct$
+BEGIN
+	DELETE FROM pg_cstore_tables WHERE logicalrelid = table_name;
+END;
+$uct$;
