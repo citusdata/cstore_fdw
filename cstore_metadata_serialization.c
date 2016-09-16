@@ -18,6 +18,7 @@
 #include "cstore_metadata_serialization.h"
 #include "cstore.pb-c.h"
 #include "access/tupmacs.h"
+#include "storage/buf.h"
 
 
 /* local functions forward declarations */
@@ -578,4 +579,78 @@ ProtobufBinaryToDatum(ProtobufCBinaryData protobufBinary, bool datumTypeByValue,
 	datum = fetch_att(binaryDataCopy, datumTypeByValue, datumTypeLength);
 
 	return datum;
+}
+
+
+/* DeserializeFooterMetadata deserializes footer metadata to extract where footer
+ * starts and length of footer data in number of pages.
+ * Expects to see cstore magic number (char[12]), major version (uint32), minor version(uint32)
+ * startingPage (uint32), pageCount (uint32)
+ */
+bool
+DeserializeTableFooterMetadata(const char *data, uint32 length, uint32 *startingPage,
+							   uint32 *pageCount)
+{
+	uint32 offset = 0;
+	char *magicNumber = pstrdup(CSTORE_MAGIC_NUMBER);
+	uint32 magicLength = strnlen(magicNumber, NAMEDATALEN);
+	uint32 footerMetadataLength = magicLength + 4 * sizeof(uint32);
+	uint32 majorVersion = 0;
+	uint32 minorVersion = 0;
+
+	*startingPage = InvalidBuffer;
+	*pageCount = InvalidBuffer;
+
+	if (length < footerMetadataLength)
+	{
+		return false;
+	}
+
+	if (memcmp(data, magicNumber, magicLength) != 0)
+	{
+		return false;
+	}
+
+	offset = magicLength;
+
+	memcpy(&majorVersion, data + offset, sizeof(uint32));
+	offset += sizeof(uint32);
+
+	memcpy(&minorVersion, data + offset, sizeof(uint32));
+	offset += sizeof(uint32);
+
+	if (majorVersion != CSTORE_VERSION_MAJOR ||
+		minorVersion != CSTORE_VERSION_MINOR)
+	{
+		ereport(ERROR, (errmsg("Unsupported cstore_fdw version")));
+	}
+
+	memcpy(startingPage, data + offset, sizeof(uint32));
+	offset += sizeof(uint32);
+
+	memcpy(pageCount, data + offset, sizeof(uint32));
+
+	return true;
+}
+
+
+/* SerializeTableFooterMetadata serializes footer metadata. Serialized string
+ * contains see cstore magic number (char[12]), major version (uint32),
+ * minor version(uint32), startingPage (uint32), pageCount (uint32)
+ */
+StringInfo
+SerializeTableFooterMetadata(uint32 startingPage, uint32 pageCount)
+{
+	StringInfo resultString = makeStringInfo();
+	uint32 majorVersion = CSTORE_VERSION_MAJOR;
+	uint32 minorVersion = CSTORE_VERSION_MINOR;
+
+	appendBinaryStringInfo(resultString, CSTORE_MAGIC_NUMBER,
+						   strnlen(CSTORE_MAGIC_NUMBER, NAMEDATALEN));
+	appendBinaryStringInfo(resultString, (char *) &majorVersion, sizeof(uint32));
+	appendBinaryStringInfo(resultString, (char *) &minorVersion, sizeof(uint32));
+	appendBinaryStringInfo(resultString, (char *)  &startingPage, sizeof(uint32));
+	appendBinaryStringInfo(resultString, (char *)  &pageCount, sizeof(uint32));
+
+	return resultString;
 }

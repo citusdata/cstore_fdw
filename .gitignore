@@ -43,7 +43,6 @@
 /data/*.footer
 
 /sql/block_filtering.sql
-/sql/create.sql
 /sql/data_types.sql
 /sql/load.sql
 

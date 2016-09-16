@@ -40,15 +40,15 @@ CREATE OR REPLACE FUNCTION cstore_drop_trigger()
 	RETURNS event_trigger
 	LANGUAGE plpgsql
 	AS $csdt$
-DECLARE v_obj record;
+DECLARE dropped_object record;
 BEGIN
-	FOR v_obj IN SELECT * FROM pg_event_trigger_dropped_objects() LOOP
+	FOR dropped_object IN SELECT * FROM pg_event_trigger_dropped_objects() LOOP
 
-		IF v_obj.object_type NOT IN ('table', 'foreign table') THEN
+		IF dropped_object.object_type <> 'foreign table' THEN
 			CONTINUE;
 		END IF;
 
-		PERFORM cstore_clean_table_resources(v_obj.objid);
+		PERFORM public.cstore_clean_table_resources(dropped_object.objid);
 
 	END LOOP;
 END;

@@ -1,33 +1,43 @@
 --
 -- Test the DROP FOREIGN TABLE command for cstore_fdw tables.
 --
--- Check that files for the automatically managed table exist in the
--- cstore_fdw/{databaseoid} directory.
-SELECT count(*) FROM (
-	SELECT pg_ls_dir('cstore_fdw/' || databaseoid ) FROM (
-	SELECT oid::text databaseoid FROM pg_database WHERE datname = current_database()
-	) AS q1) AS q2;
- count 
--------
-     2
-(1 row)
-
+-- determine base directory where tables files are created
+SELECT ('base/' || databaseoid)::text as databasedir
+	FROM (
+		SELECT oid::text databaseoid
+			FROM pg_database
+			WHERE datname = current_database()) pgdir
+	\gset
+-- record created cstore relation oids as text
+SELECT array_agg(relation_name::regclass::oid::text) as relation_oids
+	FROM (
+		SELECT unnest(ARRAY[
+			'contestant',
+			'contestant_compressed']) relation_name) l
+	\gset
 -- DROP cstore_fdw tables
 DROP FOREIGN TABLE contestant;
 DROP FOREIGN TABLE contestant_compressed;
 -- Create a cstore_fdw table under a schema and drop it.
 CREATE SCHEMA test_schema;
 CREATE FOREIGN TABLE test_schema.test_table(data int) SERVER cstore_server;
+-- append this relation's oid to relation_oids
+SELECT :'relation_oids'::text[] || relation_oid as relation_oids
+	FROM (
+		SELECT 'test_schema.test_table'::regclass::oid::text as relation_oid) q1
+	\gset
 DROP SCHEMA test_schema CASCADE;
 NOTICE:  drop cascades to foreign table test_schema.test_table
--- Check that the files have been deleted and the directory is empty after the
--- DROP table command.
+-- Check that the files have been deleted from databasedir
+-- note that postgres maintaines 1 file per relation even
+-- after the relation is dropped. 0 sized file is removed
+-- during checkpoint
 SELECT count(*) FROM (
-	SELECT pg_ls_dir('cstore_fdw/' || databaseoid ) FROM (
-	SELECT oid::text databaseoid FROM pg_database WHERE datname = current_database()
-	) AS q1) AS q2;
+	SELECT * FROM pg_ls_dir(:'databasedir') as file_name
+	WHERE (regexp_split_to_array(file_name, '_'))[1] IN 
+		(SELECT * FROM unnest(:'relation_oids'::text[])) ) q1;
  count 
 -------
-     0
+     3
 (1 row)
 
