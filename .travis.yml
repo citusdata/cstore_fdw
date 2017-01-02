@@ -8,24 +8,26 @@ env:
     - PGVERSION=9.3
     - PGVERSION=9.4
     - PGVERSION=9.5
+    - PGVERSION=9.6
 before_install:
   - sudo apt-get update -qq
   - sudo update-alternatives --remove-all postmaster.1.gz
-  - git clone -b v0.3.3 --depth 1 https://github.com/citusdata/tools.git
-  - tools/travis/nuke_pg.sh
+  - git clone -b v0.5.1 --depth 1 https://github.com/citusdata/tools.git
+  - sudo make -C tools install
+  - nuke_pg
 install:
   - sudo apt-get install protobuf-c-compiler
   - sudo apt-get install libprotobuf-c0-dev
   - sudo locale-gen da_DK
   - sudo locale-gen da_DK.utf8
   - sudo pip install cpp-coveralls
-  - tools/travis/install_pg.sh
+  - install_pg
 before_script:
   - chmod 777 .
   - chmod 777 data
   - chmod 666 data/*
-  - tools/travis/config_and_start_cluster.sh
-script: tools/travis/pg_travis_test.sh
+  - config_and_start_cluster
+script: pg_travis_test
 after_success:
   - sudo chmod 666 *.gcda
   - coveralls --exclude cstore.pb-c.c --exclude cstore.pb-c.h
