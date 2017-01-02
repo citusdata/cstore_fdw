@@ -12,9 +12,13 @@ SELECT count(*) FROM (
 -- CREATE a cstore_fdw table, fill with some data --
 CREATE FOREIGN TABLE cstore_truncate_test (a int, b int) SERVER cstore_server;
 CREATE FOREIGN TABLE cstore_truncate_test_second (a int, b int) SERVER cstore_server;
+CREATE FOREIGN TABLE cstore_truncate_test_compressed (a int, b int) SERVER cstore_server OPTIONS (compression 'pglz');
 CREATE TABLE cstore_truncate_test_regular (a int, b int);
 
 INSERT INTO cstore_truncate_test select a, a from generate_series(1, 10) a;
+
+INSERT INTO cstore_truncate_test_compressed select a, a from generate_series(1, 10) a;
+INSERT INTO cstore_truncate_test_compressed select a, a from generate_series(1, 10) a;
 
 -- query rows
 SELECT * FROM cstore_truncate_test;
@@ -24,6 +28,12 @@ TRUNCATE TABLE cstore_truncate_test;
 SELECT * FROM cstore_truncate_test;
 
 SELECT COUNT(*) from cstore_truncate_test;
+
+SELECT count(*) FROM cstore_truncate_test_compressed;
+TRUNCATE TABLE cstore_truncate_test_compressed;
+SELECT count(*) FROM cstore_truncate_test_compressed;
+
+SELECT cstore_table_size('cstore_truncate_test_compressed');
 
 -- make sure data files still present 
 SELECT count(*) FROM (
@@ -56,3 +66,4 @@ SELECT * from cstore_truncate_test;
 
 DROP FOREIGN TABLE cstore_truncate_test, cstore_truncate_test_second;
 DROP TABLE cstore_truncate_test_regular;
+DROP FOREIGN TABLE cstore_truncate_test_compressed;
