@@ -77,6 +77,7 @@ static List * FindCStoreTables(List *tableList);
 static void TruncateCStoreTables(List *cstoreTableList);
 static void DeleteCStoreTableFiles(char *filename);
 static void InitializeCStoreTableFile(Oid relationId, Relation relation);
+static bool CStoreExtensionCreated();
 static bool CStoreTable(Oid relationId);
 static bool DistributedTable(Oid relationId);
 static bool DistributedWorkerCopy(CopyStmt *copyStatement);
@@ -225,6 +226,13 @@ CStoreProcessUtility(Node *parseTree, const char *queryString,
 					 ProcessUtilityContext context, ParamListInfo paramListInfo,
 					 DestReceiver *destReceiver, char *completionTag)
 {
+	if (!CStoreExtensionCreated())
+	{
+		CallPreviousProcessUtility(parseTree, queryString, context,
+								   paramListInfo, destReceiver, completionTag);
+		return;
+	}
+
 	if (nodeTag(parseTree) == T_CopyStmt)
 	{
 		CopyStmt *copyStatement = (CopyStmt *) parseTree;
@@ -741,6 +749,21 @@ static void InitializeCStoreTableFile(Oid relationId, Relation relation)
 			cstoreFdwOptions->compressionType, cstoreFdwOptions->stripeRowCount,
 			cstoreFdwOptions->blockRowCount, tupleDescriptor);
 	CStoreEndWrite(writeState);
+}
+
+
+/* CStoreExtensionCreated returns true if CStore extension is created */
+static bool
+CStoreExtensionCreated()
+{
+	bool missingOK = true;
+	Oid extensionOid = get_extension_oid(CSTORE_FDW_NAME, missingOK);
+	if (extensionOid == InvalidOid)
+	{
+		return false;
+	}
+
+	return true;
 }
 
 
