@@ -284,6 +284,9 @@ the installation:
 
 Changeset
 ---------
+### Version 1.5.1
+* (Fix) Verify cstore_fdw server on CREATE FOREIGN TABLE command
+
 ### Version 1.5
 * (Feature) Added support for PostgresSQL 9.6.
 * (Fix) Removed table data when cstore_fdw table is indirectly dropped.
