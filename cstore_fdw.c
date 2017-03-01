@@ -78,6 +78,7 @@ static void TruncateCStoreTables(List *cstoreTableList);
 static void DeleteCStoreTableFiles(char *filename);
 static void InitializeCStoreTableFile(Oid relationId, Relation relation);
 static bool CStoreTable(Oid relationId);
+static bool CStoreServer(ForeignServer *server);
 static bool DistributedTable(Oid relationId);
 static bool DistributedWorkerCopy(CopyStmt *copyStatement);
 static void CreateCStoreDatabaseDirectory(Oid databaseOid);
@@ -202,12 +203,18 @@ cstore_ddl_event_end_trigger(PG_FUNCTION_ARGS)
 	else if (nodeTag(parseTree) == T_CreateForeignTableStmt)
 	{
 		CreateForeignTableStmt *createStatement = (CreateForeignTableStmt *) parseTree;
+		char *serverName = createStatement->servername;
 
-		Oid relationId = RangeVarGetRelid(createStatement->base.relation,
-										  AccessShareLock, false);
-		Relation relation = heap_open(relationId, AccessExclusiveLock);
-		InitializeCStoreTableFile(relationId, relation);
-		heap_close(relation, AccessExclusiveLock);
+		bool missingOK = false;
+		ForeignServer *server = GetForeignServerByName(serverName, missingOK);
+		if (CStoreServer(server))
+		{
+			Oid relationId = RangeVarGetRelid(createStatement->base.relation,
+											  AccessShareLock, false);
+			Relation relation = heap_open(relationId, AccessExclusiveLock);
+			InitializeCStoreTableFile(relationId, relation);
+			heap_close(relation, AccessExclusiveLock);
+		}
 	}
 
 	PG_RETURN_NULL();
@@ -764,16 +771,33 @@ CStoreTable(Oid relationId)
 	{
 		ForeignTable *foreignTable = GetForeignTable(relationId);
 		ForeignServer *server = GetForeignServer(foreignTable->serverid);
-		ForeignDataWrapper *foreignDataWrapper = GetForeignDataWrapper(server->fdwid);
-
-		char *foreignWrapperName = foreignDataWrapper->fdwname;
-		if (strncmp(foreignWrapperName, CSTORE_FDW_NAME, NAMEDATALEN) == 0)
+		if (CStoreServer(server))
 		{
 			cstoreTable = true;
 		}
 	}
 
 	return cstoreTable;
+}
+
+
+/*
+ * CStoreServer checks if the given foreign server belongs to cstore_fdw. If it
+ * does, the function returns true. Otherwise, it returns false.
+ */
+static bool
+CStoreServer(ForeignServer *server)
+{
+	ForeignDataWrapper *foreignDataWrapper = GetForeignDataWrapper(server->fdwid);
+	bool cstoreServer = false;
+
+	char *foreignWrapperName = foreignDataWrapper->fdwname;
+	if (strncmp(foreignWrapperName, CSTORE_FDW_NAME, NAMEDATALEN) == 0)
+	{
+		cstoreServer = true;
+	}
+
+	return cstoreServer;
 }
 
 
