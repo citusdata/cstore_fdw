@@ -14,6 +14,7 @@ before_install:
   - git clone -b v0.3.3 --depth 1 https://github.com/citusdata/tools.git
   - tools/travis/nuke_pg.sh
 install:
+  - sudo apt-get install libsnappy-dev zlib1g-dev
   - sudo apt-get install protobuf-c-compiler
   - sudo apt-get install libprotobuf-c0-dev
   - sudo locale-gen da_DK
