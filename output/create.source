@@ -24,7 +24,7 @@ CREATE FOREIGN TABLE test_validator_invalid_compression_type ()
 	SERVER cstore_server
 	OPTIONS(filename 'data.cstore', compression 'invalid_compression'); -- ERROR
 ERROR:  invalid compression type
-HINT:  Valid options are: none, pglz
+HINT:  Valid options are: none, pglz, snappy, deflate
 -- Invalid file path test
 CREATE FOREIGN TABLE test_invalid_file_path ()
 	SERVER cstore_server
