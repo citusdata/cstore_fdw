@@ -1364,6 +1364,14 @@ ParseCompressionType(const char *compressionTypeString)
 	{
 		compressionType = COMPRESSION_PG_LZ;
 	}
+	else if (strncmp(compressionTypeString, COMPRESSION_STRING_SNAPPY, NAMEDATALEN) == 0)
+	{
+		compressionType = COMPRESSION_SNAPPY;
+	}
+	else if (strncmp(compressionTypeString, COMPRESSION_STRING_DEFLATE, NAMEDATALEN) == 0)
+	{
+		compressionType = COMPRESSION_DEFLATE;
+	}
 
 	return compressionType;
 }

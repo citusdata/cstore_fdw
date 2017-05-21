@@ -20,7 +20,8 @@
 #include "utils/pg_lzcompress.h"
 #endif
 
-
+#include "snappy-c.h"
+#include "zlib.h"
 
 
 #if PG_VERSION_NUM >= 90500
@@ -48,7 +49,7 @@ typedef struct CStoreCompressHeader
 #define CSTORE_COMPRESS_HDRSZ		(0)
 #define CSTORE_COMPRESS_RAWSIZE(ptr) (PGLZ_RAW_SIZE((PGLZ_Header *) buffer->data))
 #define CSTORE_COMPRESS_RAWDATA(ptr) (((PGLZ_Header *) (ptr)))
-#define CSTORE_COMPRESS_SET_RAWSIZE(ptr, len) (((CStoreCompressHeader *) (ptr))->rawsize = (len))
+#define CSTORE_COMPRESS_SET_RAWSIZE(ptr, len) (((PGLZ_Header *) (ptr))->rawsize = (len))
 
 #endif
 
@@ -64,38 +65,104 @@ bool
 CompressBuffer(StringInfo inputBuffer, StringInfo outputBuffer,
 			   CompressionType compressionType)
 {
-	uint64 maximumLength = PGLZ_MAX_OUTPUT(inputBuffer->len) + CSTORE_COMPRESS_HDRSZ;
+	uint64 maximumLength = 0;
 	bool compressionResult = false;
-#if PG_VERSION_NUM >= 90500
+//#if PG_VERSION_NUM >= 90500
 	int32 compressedByteCount = 0;
-#endif
+//#endif
 
-	if (compressionType != COMPRESSION_PG_LZ)
+	if (compressionType == COMPRESSION_PG_LZ)
 	{
-		return false;
-	}
-
-	resetStringInfo(outputBuffer);
-	enlargeStringInfo(outputBuffer, maximumLength);
+		maximumLength = PGLZ_MAX_OUTPUT(inputBuffer->len) + CSTORE_COMPRESS_HDRSZ;
+	        resetStringInfo(outputBuffer);
+	        enlargeStringInfo(outputBuffer, maximumLength);
 
 #if PG_VERSION_NUM >= 90500
-	compressedByteCount = pglz_compress((const char *) inputBuffer->data,
+		compressedByteCount = pglz_compress((const char *) inputBuffer->data,
 										inputBuffer->len,
 										CSTORE_COMPRESS_RAWDATA(outputBuffer->data),
 										PGLZ_strategy_always);
-	if (compressedByteCount >= 0)
-	{
-		CSTORE_COMPRESS_SET_RAWSIZE(outputBuffer->data, inputBuffer->len);
-		SET_VARSIZE_COMPRESSED(outputBuffer->data,
-							   compressedByteCount + CSTORE_COMPRESS_HDRSZ);
-		compressionResult = true;
-	}
+		if (compressedByteCount >= 0)
+		{
+			CSTORE_COMPRESS_SET_RAWSIZE(outputBuffer->data, inputBuffer->len);
+			SET_VARSIZE_COMPRESSED(outputBuffer->data,
+								   compressedByteCount + CSTORE_COMPRESS_HDRSZ);
+			compressionResult = true;
+		}
 #else
 
-	compressionResult = pglz_compress(inputBuffer->data, inputBuffer->len,
-									  CSTORE_COMPRESS_RAWDATA(outputBuffer->data),
-									  PGLZ_strategy_always);
+		compressionResult = pglz_compress(inputBuffer->data, inputBuffer->len,
+										  CSTORE_COMPRESS_RAWDATA(outputBuffer->data),
+										  PGLZ_strategy_always);
 #endif
+	} else if (compressionType == COMPRESSION_SNAPPY)
+	{
+		maximumLength = snappy_max_compressed_length(inputBuffer->len);
+	        resetStringInfo(outputBuffer);
+	        enlargeStringInfo(outputBuffer, maximumLength);
+
+		if (snappy_compress(inputBuffer->data, inputBuffer->len, (char *)CSTORE_COMPRESS_RAWDATA(outputBuffer->data), (size_t *)&compressedByteCount) == SNAPPY_OK)
+		{
+
+                	if (compressedByteCount >= 0)
+	                {
+	                        CSTORE_COMPRESS_SET_RAWSIZE(outputBuffer->data, inputBuffer->len);
+	                        SET_VARSIZE_COMPRESSED(outputBuffer->data,
+                                                                   compressedByteCount + CSTORE_COMPRESS_HDRSZ);
+	                        compressionResult = true;
+	                }
+		} else
+		{
+			compressionResult = false;
+		}
+
+
+
+	} else if (compressionType == COMPRESSION_DEFLATE)
+	{
+		z_stream strm;
+
+		/* allocate deflate state */
+		strm.zalloc = Z_NULL;
+		strm.zfree = Z_NULL;
+		strm.opaque = Z_NULL;
+
+		if (deflateInit(&strm, Z_DEFAULT_COMPRESSION) != Z_OK)
+		{
+                        ereport(ERROR, (errmsg("deflate cannot compress the buffer"),
+                                                        errdetail("unable to initialize deflate state")));
+		}
+	
+		/* get upper bound for compressed data and allocate buffer */	
+		maximumLength = deflateBound(&strm, inputBuffer->len);
+	        resetStringInfo(outputBuffer);
+	        enlargeStringInfo(outputBuffer, maximumLength);
+
+		/* set the streaming context */
+		strm.avail_in = inputBuffer->len;
+		strm.next_in = (Bytef *)inputBuffer->data;
+		strm.avail_out = maximumLength;
+		strm.next_out = (Bytef *)CSTORE_COMPRESS_RAWDATA(outputBuffer->data);
+
+		/* do a single pass deflate compression */
+		if (deflate(&strm, Z_FINISH) == Z_STREAM_END) 
+		{
+			if (maximumLength - strm.avail_out >= 0)
+                        {
+                                CSTORE_COMPRESS_SET_RAWSIZE(outputBuffer->data, inputBuffer->len);
+                                SET_VARSIZE_COMPRESSED(outputBuffer->data,
+                                                                   maximumLength - strm.avail_out + CSTORE_COMPRESS_HDRSZ);
+                                compressionResult = true;
+                        }
+
+		} else
+		{
+                        compressionResult = false;
+                }
+
+		/* closes the deflate stream */
+		(void)deflateEnd(&strm);
+	}
 
 	if (compressionResult)
 	{
@@ -114,27 +181,24 @@ StringInfo
 DecompressBuffer(StringInfo buffer, CompressionType compressionType)
 {
 	StringInfo decompressedBuffer = NULL;
+	int32 decompressedByteCount = -1;
+	char *decompressedData = NULL;
+        uint32 decompressedDataSize = CSTORE_COMPRESS_RAWSIZE(buffer->data);
+	uint32 compressedDataSize = VARSIZE(buffer->data) - CSTORE_COMPRESS_HDRSZ;
 
-	Assert(compressionType == COMPRESSION_NONE || compressionType == COMPRESSION_PG_LZ);
+	Assert(compressionType == COMPRESSION_NONE || compressionType == COMPRESSION_PG_LZ ||
+		compressionType == COMPRESSION_SNAPPY || compressionType == COMPRESSION_DEFLATE);
 
 	if (compressionType == COMPRESSION_NONE)
 	{
 		/* in case of no compression, return buffer */
 		decompressedBuffer = buffer;
-	}
-	else if (compressionType == COMPRESSION_PG_LZ)
+	} else if (compressionType == COMPRESSION_PG_LZ)
 	{
-		uint32 compressedDataSize = VARSIZE(buffer->data) - CSTORE_COMPRESS_HDRSZ;
-		uint32 decompressedDataSize = CSTORE_COMPRESS_RAWSIZE(buffer->data);
-		char *decompressedData = NULL;
-#if PG_VERSION_NUM >= 90500
-		int32 decompressedByteCount = 0;
-#endif
-
 		if (compressedDataSize + CSTORE_COMPRESS_HDRSZ != buffer->len)
 		{
-			ereport(ERROR, (errmsg("cannot decompress the buffer"),
-							errdetail("Expected %u bytes, but received %u bytes",
+			ereport(ERROR, (errmsg("pglz cannot decompress the buffer"),
+							errdetail("expected %u bytes, but received %u bytes",
 									  compressedDataSize, buffer->len)));
 		}
 
@@ -147,7 +211,7 @@ DecompressBuffer(StringInfo buffer, CompressionType compressionType)
 
 		if (decompressedByteCount < 0)
 		{
-			ereport(ERROR, (errmsg("cannot decompress the buffer"),
+			ereport(ERROR, (errmsg("pglz cannot decompress the buffer"),
 							errdetail("compressed data is corrupted")));
 		}
 #else
@@ -158,7 +222,64 @@ DecompressBuffer(StringInfo buffer, CompressionType compressionType)
 		decompressedBuffer->data = decompressedData;
 		decompressedBuffer->len = decompressedDataSize;
 		decompressedBuffer->maxlen = decompressedDataSize;
-	}
+	} else if (compressionType == COMPRESSION_SNAPPY) 
+	{
+		decompressedData = palloc0(decompressedDataSize);
+
+		if (snappy_uncompress(CSTORE_COMPRESS_RAWDATA(buffer->data), compressedDataSize, decompressedData, (size_t *)&decompressedByteCount) != SNAPPY_OK)
+		{
+			ereport(ERROR, (errmsg("snappy cannot decompress the buffer"),
+							errdetail("compressed data is corrupted")));
+		}
+		if (decompressedByteCount < 0)
+		{
+			ereport(ERROR, (errmsg("snappy cannot decompress the buffer"),
+							errdetail("count less than zero")));
+		}
+
+		decompressedBuffer = palloc0(sizeof(StringInfoData));
+		decompressedBuffer->data = decompressedData;
+		decompressedBuffer->len = decompressedDataSize;
+		decompressedBuffer->maxlen = decompressedDataSize;
+
+	} else if (compressionType == COMPRESSION_DEFLATE) 
+	{
+		z_stream strm;
+
+		/* allocate deflate state */
+		strm.zalloc = Z_NULL;
+		strm.zfree = Z_NULL;
+		strm.opaque = Z_NULL;
+
+		if (inflateInit(&strm) != Z_OK)
+		{
+                        ereport(ERROR, (errmsg("inflate cannot decompress the buffer"),
+                                                        errdetail("unable to initialize inflate state")));
+		}
+	
+                decompressedData = palloc0(decompressedDataSize);
+
+		/* set the streaming context */
+		strm.avail_in = compressedDataSize;
+		strm.next_in = (Bytef *)CSTORE_COMPRESS_RAWDATA(buffer->data);
+		strm.avail_out = decompressedDataSize;
+		strm.next_out = (Bytef *)decompressedData;
+
+		/* do a single pass inflate decompression */
+		if (inflate(&strm, Z_FINISH) != Z_STREAM_END) 
+		{
+                        ereport(ERROR, (errmsg("inflate cannot decompress the buffer"),
+                                                        errdetail("data is corrupted")));
+		}
+
+		decompressedBuffer = palloc0(sizeof(StringInfoData));
+		decompressedBuffer->data = decompressedData;
+		decompressedBuffer->len = decompressedDataSize;
+		decompressedBuffer->maxlen = decompressedDataSize;
+
+		/* closes the inflate stream */
+		(void)inflateEnd(&strm);
+	} 
 
 	return decompressedBuffer;
 }

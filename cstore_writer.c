@@ -798,7 +798,9 @@ SerializeBlockData(TableWriteState *writeState, uint32 blockIndex, uint32 rowCou
 
 		/* the only other supported compression type is pg_lz for now */
 		Assert(requestedCompressionType == COMPRESSION_NONE ||
-			   requestedCompressionType == COMPRESSION_PG_LZ);
+			   requestedCompressionType == COMPRESSION_PG_LZ ||
+			   requestedCompressionType == COMPRESSION_SNAPPY ||
+			   requestedCompressionType == COMPRESSION_DEFLATE);
 
 		/*
 		 * if serializedValueBuffer is be compressed, update serializedValueBuffer
@@ -809,7 +811,8 @@ SerializeBlockData(TableWriteState *writeState, uint32 blockIndex, uint32 rowCou
 		if (compressed)
 		{
 			serializedValueBuffer = compressionBuffer;
-			actualCompressionType = COMPRESSION_PG_LZ;
+//			actualCompressionType = COMPRESSION_PG_LZ;
+			actualCompressionType = requestedCompressionType;
 		}
 
 		/* store (compressed) value buffer */

@@ -5,8 +5,8 @@
 
 MODULE_big = cstore_fdw
 
-PG_CPPFLAGS = --std=c99
-SHLIB_LINK = -lprotobuf-c
+PG_CPPFLAGS = --std=c99 -O2
+SHLIB_LINK = -lprotobuf-c -lsnappy -lz
 OBJS = cstore.pb-c.o cstore_fdw.o cstore_writer.o cstore_reader.o \
        cstore_metadata_serialization.o cstore_compression.o
 

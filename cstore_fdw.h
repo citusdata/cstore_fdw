@@ -43,7 +43,9 @@
 /* String representations of compression types */
 #define COMPRESSION_STRING_NONE "none"
 #define COMPRESSION_STRING_PG_LZ "pglz"
-#define COMPRESSION_STRING_DELIMITED_LIST "none, pglz"
+#define COMPRESSION_STRING_SNAPPY "snappy"
+#define COMPRESSION_STRING_DEFLATE "deflate"
+#define COMPRESSION_STRING_DELIMITED_LIST "none, pglz, snappy, deflate"
 
 /* CStore file signature */
 #define CSTORE_MAGIC_NUMBER "citus_cstore"
@@ -99,6 +101,8 @@ typedef enum
 	COMPRESSION_TYPE_INVALID = -1,
 	COMPRESSION_NONE = 0,
 	COMPRESSION_PG_LZ = 1,
+	COMPRESSION_SNAPPY = 2,
+	COMPRESSION_DEFLATE = 3,
 
 	COMPRESSION_COUNT
 
