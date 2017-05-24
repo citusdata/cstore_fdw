@@ -56,10 +56,12 @@
 
 
 /* local functions forward declarations */
-static void CStoreProcessUtility(Node *parseTree, const char *queryString,
+static void CStoreProcessUtility(PlannedStmt *plannedStatement, const char *queryString,
 								 ProcessUtilityContext context,
 								 ParamListInfo paramListInfo,
+								 QueryEnvironment *queryEnv,
 								 DestReceiver *destReceiver, char *completionTag);
+
 static void CallPreviousProcessUtility(Node* parseTree, const char* queryString,
 									   ProcessUtilityContext context,
 									   ParamListInfo paramListInfo,
@@ -228,10 +230,14 @@ cstore_ddl_event_end_trigger(PG_FUNCTION_ARGS)
  * the previous utility hook or the standard utility command.
  */
 static void
-CStoreProcessUtility(Node *parseTree, const char *queryString,
+CStoreProcessUtility(PlannedStmt *plannedStatement, const char *queryString,
 					 ProcessUtilityContext context, ParamListInfo paramListInfo,
+					 QueryEnvironment *queryEnv,
 					 DestReceiver *destReceiver, char *completionTag)
 {
+
+	Node *parseTree = plannedStatement->utilityStmt;
+
 	if (nodeTag(parseTree) == T_CopyStmt)
 	{
 		CopyStmt *copyStatement = (CopyStmt *) parseTree;
@@ -302,14 +308,19 @@ CallPreviousProcessUtility(Node* parseTree, const char* queryString,
 						   ProcessUtilityContext context, ParamListInfo paramListInfo,
 						   DestReceiver* destReceiver, char* completionTag)
 {
+	PlannedStmt *plannedStmt = makeNode(PlannedStmt);
+	plannedStmt->commandType = CMD_UTILITY;
+	plannedStmt->utilityStmt = parseTree;
+
+
 	if (PreviousProcessUtilityHook != NULL)
 	{
-		PreviousProcessUtilityHook(parseTree, queryString, context,
-								   paramListInfo, destReceiver, completionTag);
+		PreviousProcessUtilityHook(plannedStmt, queryString, context,
+								   paramListInfo, NULL, destReceiver, completionTag);
 	}
 	else
 	{
-		standard_ProcessUtility(parseTree, queryString, context, paramListInfo,
+		standard_ProcessUtility(plannedStmt, queryString, context, paramListInfo, NULL,
 								destReceiver, completionTag);
 	}
 }
@@ -466,10 +477,21 @@ CopyIntoCStoreTable(const CopyStmt *copyStatement, const char *queryString)
 										 ALLOCSET_DEFAULT_MAXSIZE);
 
 	/* init state to read from COPY data source */
-	copyState = BeginCopyFrom(relation, copyStatement->filename,
+	#if (PG_VERSION_NUM >= 100000)
+	copyState = BeginCopyFrom(NULL,
+			relation,
+						  copyStatement->filename,
+						  copyStatement->is_program,
+						  NULL,
+						  copyStatement->attlist,
+						  copyStatement->options);
+#else
+	copyState = BeginCopyFrom(relation,
+							  copyStatement->filename,
 							  copyStatement->is_program,
 							  copyStatement->attlist,
 							  copyStatement->options);
+#endif
 
 	/* init state to write to the cstore file */
 	writeState = CStoreBeginWrite(cstoreFdwOptions->filename,
@@ -542,7 +564,20 @@ CopyOutCStoreTable(CopyStmt* copyStatement, const char* queryString)
 	 * query field instead.
 	 */
 	copyStatement->relation = NULL;
-	DoCopy(copyStatement, queryString, &processedCount);
+
+#if (PG_VERSION_NUM >= 100000)
+ 	{
+ 			ParseState *pstate = make_parsestate(NULL);
+ 			pstate->p_sourcetext = queryString;
+
+ 			DoCopy(pstate, copyStatement, -1, -1, &processedCount);
+
+ 			free_parsestate(pstate);
+ 		}
+ #else
+  		DoCopy(copyStatement, queryString, &processedCount);
+ #endif
+
 
 	return processedCount;
 }
