@@ -515,10 +515,11 @@ CStoreWriteFooter(TableFooter *tableFooter, Relation relation, bool loggingEnabl
 	headerBufferPageHeader->pd_lower = SizeOfPageHeaderData + tableFooterMetadata->len;
 	MarkBufferDirty(headerBuffer);
 
-	if (loggingEnabled)
-	{
-		log_newpage_buffer(headerBuffer, false);
-	}
+	/*
+	 * Changes to headerBuffer is logged regardless of logging setting to enable
+	 * recovery after crash.
+	 */
+	log_newpage_buffer(headerBuffer, false);
 
 	END_CRIT_SECTION();
 
