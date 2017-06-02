@@ -59,6 +59,7 @@
 #include "catalog/storage.h"
 
 /* local functions forward declarations */
+static void RegisterCStoreTable(Oid relationId);
 static void CStoreProcessUtility(Node *parseTree, const char *queryString,
 								 ProcessUtilityContext context,
 								 ParamListInfo paramListInfo,
@@ -82,9 +83,6 @@ static bool CStoreTable(Oid relationId);
 static bool CStoreServer(ForeignServer *server);
 static bool DistributedTable(Oid relationId);
 static bool DistributedWorkerCopy(CopyStmt *copyStatement);
-static void CreateCStoreDatabaseDirectory(Oid databaseOid);
-static bool DirectoryExists(StringInfo directoryName);
-static void CreateDirectory(StringInfo directoryName);
 static StringInfo OptionNamesString(Oid currentContextId);
 static CStoreFdwOptions * CStoreGetOptions(Oid foreignTableId);
 static char * CStoreGetOptionValue(Oid foreignTableId, const char *optionName);
@@ -144,6 +142,7 @@ PG_FUNCTION_INFO_V1(cstore_fdw_validator);
 PG_FUNCTION_INFO_V1(cstore_clean_table_resources);
 
 
+
 /* saved hook value in case of unload */
 static ProcessUtility_hook_type PreviousProcessUtilityHook = NULL;
 
@@ -172,9 +171,8 @@ void _PG_fini(void)
 
 /*
  * cstore_ddl_event_end_trigger is the event trigger function which is called on
- * ddl_command_end event. This function creates required directories after the
- * CREATE SERVER statement and valid data and footer files after the CREATE FOREIGN
- * TABLE statement.
+ * ddl_command_end event. This function initializes data and footer storage
+ * after the CREATE FOREIGN TABLE statement.
  */
 Datum
 cstore_ddl_event_end_trigger(PG_FUNCTION_ARGS)
@@ -191,17 +189,7 @@ cstore_ddl_event_end_trigger(PG_FUNCTION_ARGS)
 	triggerData = (EventTriggerData *) fcinfo->context;
 	parseTree = triggerData->parsetree;
 
-	if (nodeTag(parseTree) == T_CreateForeignServerStmt)
-	{
-		CreateForeignServerStmt *serverStatement = (CreateForeignServerStmt *) parseTree;
-
-		char *foreignWrapperName = serverStatement->fdwname;
-		if (strncmp(foreignWrapperName, CSTORE_FDW_NAME, NAMEDATALEN) == 0)
-		{
-			CreateCStoreDatabaseDirectory(MyDatabaseId);
-		}
-	}
-	else if (nodeTag(parseTree) == T_CreateForeignTableStmt)
+	if (nodeTag(parseTree) == T_CreateForeignTableStmt)
 	{
 		CreateForeignTableStmt *createStatement = (CreateForeignTableStmt *) parseTree;
 		char *serverName = createStatement->servername;
@@ -217,10 +205,53 @@ cstore_ddl_event_end_trigger(PG_FUNCTION_ARGS)
 
 			InitializeCStoreTableFile(relationId, relation);
 			heap_close(relation, AccessExclusiveLock);
+
+			RegisterCStoreTable(relationId);
 		}
 	}
 
 	PG_RETURN_NULL();
+}
+
+
+/*
+ * RegisterCStoreTable calls register_cstore_table UDF to register
+ * given relation id in pg_cstore_tables.
+ */
+static void
+RegisterCStoreTable(Oid relationId)
+{
+	Oid functionOid = InvalidOid;
+	char *schemaName = "public";
+	char *functionName = "register_cstore_table";
+	char *qualifiedFunctionName = NULL;
+	List *qualifiedFunctionNameList = NIL;
+	FuncCandidateList functionList = NULL;
+	int argumentCount = 1;
+	List *argumentNames = NIL;
+	bool expandVariadic = false;
+	bool expandDefaults = false;
+	bool missingOK = true;
+
+	qualifiedFunctionName = quote_qualified_identifier(schemaName, functionName);
+	qualifiedFunctionNameList = stringToQualifiedNameList(qualifiedFunctionName);
+	functionList = FuncnameGetCandidates(qualifiedFunctionNameList, argumentCount,
+										 argumentNames, expandVariadic,
+										 expandDefaults, missingOK);
+	if (functionList == NULL)
+	{
+		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_FUNCTION),
+						errmsg("function \"%s\" does not exist", functionName)));
+	}
+	else if (functionList->next != NULL)
+	{
+		ereport(ERROR, (errcode(ERRCODE_AMBIGUOUS_FUNCTION),
+						errmsg("more than one function named \"%s\"", functionName)));
+	}
+
+	functionOid = functionList->oid;
+
+	OidFunctionCall1(functionOid, ObjectIdGetDatum(relationId));
 }
 
 
@@ -783,89 +814,6 @@ DistributedWorkerCopy(CopyStmt *copyStatement)
     }
 
     return false;
-}
-
-
-/*
- * CreateCStoreDatabaseDirectory creates the directory (and parent directories,
- * if needed) used to store automatically managed cstore_fdw files. The path to
- * the directory is $PGDATA/cstore_fdw/{databaseOid}.
- */
-static void
-CreateCStoreDatabaseDirectory(Oid databaseOid)
-{
-	bool cstoreDirectoryExists = false;
-	bool databaseDirectoryExists = false;
-	StringInfo cstoreDatabaseDirectoryPath = NULL;
-
-	StringInfo cstoreDirectoryPath = makeStringInfo();
-	appendStringInfo(cstoreDirectoryPath, "%s/%s", DataDir, CSTORE_FDW_NAME);
-
-	cstoreDirectoryExists = DirectoryExists(cstoreDirectoryPath);
-	if (!cstoreDirectoryExists)
-	{
-		CreateDirectory(cstoreDirectoryPath);
-	}
-
-	cstoreDatabaseDirectoryPath = makeStringInfo();
-	appendStringInfo(cstoreDatabaseDirectoryPath, "%s/%s/%u", DataDir,
-					 CSTORE_FDW_NAME, databaseOid);
-
-	databaseDirectoryExists = DirectoryExists(cstoreDatabaseDirectoryPath);
-	if (!databaseDirectoryExists)
-	{
-		CreateDirectory(cstoreDatabaseDirectoryPath);
-	}
-}
-
-
-/* DirectoryExists checks if a directory exists for the given directory name. */
-static bool
-DirectoryExists(StringInfo directoryName)
-{
-	bool directoryExists = true;
-	struct stat directoryStat;
-
-	int statOK = stat(directoryName->data, &directoryStat);
-	if (statOK == 0)
-	{
-		/* file already exists; check that it is a directory */
-		if (!S_ISDIR(directoryStat.st_mode))
-		{
-			ereport(ERROR, (errmsg("\"%s\" is not a directory", directoryName->data),
-							errhint("You need to remove or rename the file \"%s\".",
-									directoryName->data)));
-		}
-	}
-	else
-	{
-		if (errno == ENOENT)
-		{
-			directoryExists = false;
-		}
-		else
-		{
-			ereport(ERROR, (errcode_for_file_access(),
-							errmsg("could not stat directory \"%s\": %m",
-								   directoryName->data)));
-		}
-	}
-
-	return directoryExists;
-}
-
-
-/* CreateDirectory creates a new directory with the given directory name. */
-static void
-CreateDirectory(StringInfo directoryName)
-{
-	int makeOK = mkdir(directoryName->data, S_IRWXU);
-	if (makeOK != 0)
-	{
-		ereport(ERROR, (errcode_for_file_access(),
-						errmsg("could not create directory \"%s\": %m",
-							   directoryName->data)));
-	}
 }
 
 
