@@ -22,6 +22,7 @@
 #include "access/heapam.h"
 #include "access/nbtree.h"
 #include "catalog/pg_collation.h"
+#include "catalog/storage_xlog.h"
 #include "commands/defrem.h"
 #include "miscadmin.h"
 #include "optimizer/var.h"
@@ -177,45 +178,23 @@ CStoreBeginWrite(Relation relation, CompressionType compressionType,
 /*
  * EnsureDataForkExists checks if data fork exists for writing data,
  * and creates if it is not present.
- *
- * If the table has logging enabled, the function also creates a blank data
- * page so that there is a WAL log created and the data fork is created
- * in replicas.
  */
 static void EnsureDataForkExists(Relation relation, bool logging)
 {
 	SMgrRelation srel = smgropen(relation->rd_node, InvalidBackendId);
-	bool initializeAndLogFirstPage = false;
 
 	if (!smgrexists(srel, DATA_FORKNUM))
 	{
 		smgrcreate(srel, DATA_FORKNUM, false);
-		initializeAndLogFirstPage = logging;
+
+		if (logging)
+		{
+			log_smgrcreate(&srel->smgr_rnode.node, DATA_FORKNUM);
+		}
 	}
 
 	Assert(smgrexists(srel, DATA_FORKNUM));
 	smgrclose(srel);
-
-	/* create a blank buffer to make sure it is replicated */
-	if (initializeAndLogFirstPage)
-	{
-		Buffer buffer = ReadBufferExtended(relation, DATA_FORKNUM, P_NEW,
-										   RBM_NORMAL, NULL);
-		Page page = NULL;
-
-		Assert(buffer != InvalidBuffer);
-
-		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
-		START_CRIT_SECTION();
-		page = BufferGetPage(buffer);
-		PageInit(page, BLCKSZ, 0);
-
-		MarkBufferDirty(buffer);
-		log_newpage_buffer(buffer, false);
-		END_CRIT_SECTION();
-
-		UnlockReleaseBuffer(buffer);
-	}
 }
 
 

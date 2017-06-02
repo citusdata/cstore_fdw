@@ -231,13 +231,19 @@ RegisterCStoreTable(Oid relationId)
 	List *argumentNames = NIL;
 	bool expandVariadic = false;
 	bool expandDefaults = false;
+#if PG_VERSION_NUM >= 90400
 	bool missingOK = true;
+#endif
 
 	qualifiedFunctionName = quote_qualified_identifier(schemaName, functionName);
 	qualifiedFunctionNameList = stringToQualifiedNameList(qualifiedFunctionName);
 	functionList = FuncnameGetCandidates(qualifiedFunctionNameList, argumentCount,
 										 argumentNames, expandVariadic,
-										 expandDefaults, missingOK);
+										 expandDefaults
+#if PG_VERSION_NUM >= 90400
+										 ,missingOK
+#endif
+										 );
 	if (functionList == NULL)
 	{
 		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_FUNCTION),
