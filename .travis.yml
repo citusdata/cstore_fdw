@@ -12,7 +12,7 @@ env:
 before_install:
   - sudo apt-get update -qq
   - sudo update-alternatives --remove-all postmaster.1.gz
-  - git clone -b v0.5.1 --depth 1 https://github.com/citusdata/tools.git
+  - git clone -b v0.6.1 --depth 1 https://github.com/citusdata/tools.git
   - sudo make -C tools install
   - nuke_pg
 install:

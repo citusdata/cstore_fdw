@@ -55,15 +55,33 @@
 #include "utils/tqual.h"
 
 
+#define PREVIOUS_UTILITY (PreviousProcessUtilityHook != NULL \
+						  ? PreviousProcessUtilityHook : standard_ProcessUtility)
+#if PG_VERSION_NUM >= 100000
+#define CALL_PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo, \
+							  destReceiver, completionTag) \
+	PREVIOUS_UTILITY(plannedStatement, queryString, context, paramListInfo, \
+					 queryEnvironment, destReceiver, completionTag)
+#else
+#define CALL_PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo, \
+							  destReceiver, completionTag) \
+	PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo, destReceiver, \
+					 completionTag)
+#endif
+
 /* local functions forward declarations */
+#if PG_VERSION_NUM >= 100000
+static void CStoreProcessUtility(PlannedStmt *plannedStatement, const char *queryString,
+								 ProcessUtilityContext context,
+								 ParamListInfo paramListInfo,
+								 QueryEnvironment *queryEnvironment,
+								 DestReceiver *destReceiver, char *completionTag);
+#else
 static void CStoreProcessUtility(Node *parseTree, const char *queryString,
 								 ProcessUtilityContext context,
 								 ParamListInfo paramListInfo,
 								 DestReceiver *destReceiver, char *completionTag);
-static void CallPreviousProcessUtility(Node* parseTree, const char* queryString,
-									   ProcessUtilityContext context,
-									   ParamListInfo paramListInfo,
-									   DestReceiver* destReceiver, char* completionTag);
+#endif
 static bool CopyCStoreTableStatement(CopyStmt* copyStatement);
 static void CheckSuperuserPrivilegesForCopy(const CopyStmt* copyStatement);
 static void CStoreProcessCopyCommand(CopyStmt *copyStatement, const char *queryString,
@@ -225,13 +243,28 @@ cstore_ddl_event_end_trigger(PG_FUNCTION_ARGS)
  * CStoreProcessUtility is the hook for handling utility commands. This function
  * customizes the behaviour of "COPY cstore_table" and "DROP FOREIGN TABLE
  * cstore_table" commands. For all other utility statements, the function calls
- * the previous utility hook or the standard utility command.
+ * the previous utility hook or the standard utility command via macro
+ * CALL_PREVIOUS_UTILITY.
  */
+#if PG_VERSION_NUM >= 100000
 static void
-CStoreProcessUtility(Node *parseTree, const char *queryString,
-					 ProcessUtilityContext context, ParamListInfo paramListInfo,
+CStoreProcessUtility(PlannedStmt *plannedStatement, const char *queryString,
+					 ProcessUtilityContext context,
+					 ParamListInfo paramListInfo,
+					 QueryEnvironment *queryEnvironment,
 					 DestReceiver *destReceiver, char *completionTag)
+#else
+static void
+CStoreProcessUtility(Node * parseTree, const char *queryString,
+					 ProcessUtilityContext context,
+					 ParamListInfo paramListInfo,
+					 DestReceiver *destReceiver, char *completionTag)
+#endif
 {
+#if PG_VERSION_NUM >= 100000
+	Node *parseTree = plannedStatement->utilityStmt;
+#endif
+
 	if (nodeTag(parseTree) == T_CopyStmt)
 	{
 		CopyStmt *copyStatement = (CopyStmt *) parseTree;
@@ -242,17 +275,17 @@ CStoreProcessUtility(Node *parseTree, const char *queryString,
 		}
 		else
 		{
-			CallPreviousProcessUtility(parseTree, queryString, context,
-									   paramListInfo, destReceiver, completionTag);
+			CALL_PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo,
+								  destReceiver, completionTag);
 		}
 	}
 	else if (nodeTag(parseTree) == T_DropStmt)
 	{
 		ListCell *fileListCell = NULL;
-		List *droppedTables = DroppedCStoreFilenameList((DropStmt*) parseTree);
+		List *droppedTables = DroppedCStoreFilenameList((DropStmt *) parseTree);
 
-		CallPreviousProcessUtility(parseTree, queryString, context,
-								   paramListInfo, destReceiver, completionTag);
+		CALL_PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo,
+							  destReceiver, completionTag);
 
 		foreach(fileListCell, droppedTables)
 		{
@@ -260,7 +293,6 @@ CStoreProcessUtility(Node *parseTree, const char *queryString,
 
 			DeleteCStoreTableFiles(fileName);
 		}
-
 	}
 	else if (nodeTag(parseTree) == T_TruncateStmt)
 	{
@@ -271,8 +303,9 @@ CStoreProcessUtility(Node *parseTree, const char *queryString,
 		if (otherTablesList != NIL)
 		{
 			truncateStatement->relations = otherTablesList;
-			CallPreviousProcessUtility(parseTree, queryString, context, paramListInfo,
-									   destReceiver, completionTag);
+
+			CALL_PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo,
+								  destReceiver, completionTag);
 		}
 
 		TruncateCStoreTables(cstoreTablesList);
@@ -281,36 +314,14 @@ CStoreProcessUtility(Node *parseTree, const char *queryString,
 	{
 		AlterTableStmt *alterTable = (AlterTableStmt *) parseTree;
 		CStoreProcessAlterTableCommand(alterTable);
-		CallPreviousProcessUtility(parseTree, queryString, context,
-								   paramListInfo, destReceiver, completionTag);
+		CALL_PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo,
+							  destReceiver, completionTag);
 	}
 	/* handle other utility statements */
 	else
 	{
-		CallPreviousProcessUtility(parseTree, queryString, context,
-								   paramListInfo, destReceiver, completionTag);
-	}
-}
-
-
-/*
- * CallPreviousProcessUtility calls the previously registered utility hook. If no
- * utility hook is registered, it calls the standard process utility handler.
- */
-static void
-CallPreviousProcessUtility(Node* parseTree, const char* queryString,
-						   ProcessUtilityContext context, ParamListInfo paramListInfo,
-						   DestReceiver* destReceiver, char* completionTag)
-{
-	if (PreviousProcessUtilityHook != NULL)
-	{
-		PreviousProcessUtilityHook(parseTree, queryString, context,
-								   paramListInfo, destReceiver, completionTag);
-	}
-	else
-	{
-		standard_ProcessUtility(parseTree, queryString, context, paramListInfo,
-								destReceiver, completionTag);
+		CALL_PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo,
+							  destReceiver, completionTag);
 	}
 }
 
@@ -466,10 +477,24 @@ CopyIntoCStoreTable(const CopyStmt *copyStatement, const char *queryString)
 										 ALLOCSET_DEFAULT_MAXSIZE);
 
 	/* init state to read from COPY data source */
+#if (PG_VERSION_NUM >= 100000)
+	{
+		ParseState *pstate = make_parsestate(NULL);
+		pstate->p_sourcetext = queryString;
+
+		copyState = BeginCopyFrom(pstate, relation, copyStatement->filename,
+								  copyStatement->is_program,
+								  NULL,
+								  copyStatement->attlist,
+								  copyStatement->options);
+		free_parsestate(pstate);
+	}
+#else
 	copyState = BeginCopyFrom(relation, copyStatement->filename,
 							  copyStatement->is_program,
 							  copyStatement->attlist,
 							  copyStatement->options);
+#endif
 
 	/* init state to write to the cstore file */
 	writeState = CStoreBeginWrite(cstoreFdwOptions->filename,
@@ -519,6 +544,7 @@ CopyOutCStoreTable(CopyStmt* copyStatement, const char* queryString)
 	RangeVar *relation = NULL;
 	char *qualifiedName = NULL;
 	List *queryList = NIL;
+	Node *rawQuery = NULL;
 
 	StringInfo newQuerySubstring = makeStringInfo();
 
@@ -537,14 +563,34 @@ CopyOutCStoreTable(CopyStmt* copyStatement, const char* queryString)
 	queryList = raw_parser(newQuerySubstring->data);
 
 	/* take the first parse tree */
-	copyStatement->query = linitial(queryList);
+	rawQuery = linitial(queryList);
 
 	/*
 	 * Set the relation field to NULL so that COPY command works on
 	 * query field instead.
 	 */
 	copyStatement->relation = NULL;
+
+#if (PG_VERSION_NUM >= 100000)
+	/*
+	 * raw_parser returns list of RawStmt* in PG 10+ we need to
+	 * extract actual query from it.
+	 */
+	{
+		ParseState *pstate = make_parsestate(NULL);
+		RawStmt *rawStatement = (RawStmt *) rawQuery;
+
+		pstate->p_sourcetext = newQuerySubstring->data;
+		copyStatement->query = rawStatement->stmt;
+
+		DoCopy(pstate, copyStatement, -1, -1, &processedCount);
+		free_parsestate(pstate);
+	}
+#else
+	copyStatement->query = rawQuery;
+
 	DoCopy(copyStatement, queryString, &processedCount);
+#endif
 
 	return processedCount;
 }
