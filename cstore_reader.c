@@ -689,15 +689,15 @@ LoadStripeSkipList(FILE *tableFile, StripeMetadata *stripeMetadata,
 
 		for (blockIndex = 0; blockIndex < stripeBlockCount; blockIndex++)
 		{
-			columnSkipList->rowCount = 0;
-			columnSkipList->hasMinMax = false;
-			columnSkipList->minimumValue = 0;
-			columnSkipList->maximumValue = 0;
-			columnSkipList->existsBlockOffset = 0;
-			columnSkipList->valueBlockOffset = 0;
-			columnSkipList->existsLength = 0;
-			columnSkipList->valueLength = 0;
-			columnSkipList->valueCompressionType = COMPRESSION_NONE;
+			columnSkipList[blockIndex].rowCount = 0;
+			columnSkipList[blockIndex].hasMinMax = false;
+			columnSkipList[blockIndex].minimumValue = 0;
+			columnSkipList[blockIndex].maximumValue = 0;
+			columnSkipList[blockIndex].existsBlockOffset = 0;
+			columnSkipList[blockIndex].valueBlockOffset = 0;
+			columnSkipList[blockIndex].existsLength = 0;
+			columnSkipList[blockIndex].valueLength = 0;
+			columnSkipList[blockIndex].valueCompressionType = COMPRESSION_NONE;
 		}
 		blockSkipNodeArray[columnIndex] = columnSkipList;
 	}
