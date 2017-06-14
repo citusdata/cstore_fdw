@@ -631,7 +631,7 @@ CStoreProcessAlterTableCommand(AlterTableStmt *alterStatement)
 		{
 			char *columnName = alterCommand->name;
 			ColumnDef *columnDef = (ColumnDef *) alterCommand->def;
-			Oid targetTypeId = typenameTypeId(NULL, columnDef->typeName);;
+			Oid targetTypeId = typenameTypeId(NULL, columnDef->typeName);
 			char *typeName = TypeNameToString(columnDef->typeName);
 			AttrNumber attributeNumber = get_attnum(relationId, columnName);
 			Oid currentTypeId = InvalidOid;

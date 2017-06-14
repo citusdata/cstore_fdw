@@ -54,6 +54,7 @@ static StripeSkipList * LoadStripeSkipList(FILE *tableFile,
 										   StripeMetadata *stripeMetadata,
 										   StripeFooter *stripeFooter,
 										   uint32 columnCount,
+										   bool *projectedColumnMask,
 										   Form_pg_attribute *attributeFormArray);
 static bool * SelectedBlockMask(StripeSkipList *stripeSkipList,
 								List *projectedColumnList, List *whereClauseList);
@@ -63,6 +64,7 @@ static OpExpr * MakeOpExpression(Var *variable, int16 strategyNumber);
 static Oid GetOperatorByType(Oid typeId, Oid accessMethodId, int16 strategyNumber);
 static void UpdateConstraint(Node *baseConstraint, Datum minValue, Datum maxValue);
 static StripeSkipList * SelectedBlockSkipList(StripeSkipList *stripeSkipList,
+		 	 	 	 	 	 	 	 	 	  bool *projectedColumnMask,
 											  bool *selectedBlockMask);
 static uint32 StripeSkipListRowCount(StripeSkipList *stripeSkipList);
 static bool * ProjectedColumnMask(uint32 columnCount, List *projectedColumnList);
@@ -477,16 +479,19 @@ LoadFilteredStripeBuffers(FILE *tableFile, StripeMetadata *stripeMetadata,
 
 	StripeFooter *stripeFooter = LoadStripeFooter(tableFile, stripeMetadata,
 												  columnCount);
+	bool *projectedColumnMask = ProjectedColumnMask(columnCount, projectedColumnList);
+
 	StripeSkipList *stripeSkipList = LoadStripeSkipList(tableFile, stripeMetadata,
 														stripeFooter, columnCount,
+														projectedColumnMask,
 														attributeFormArray);
 
-	bool *projectedColumnMask = ProjectedColumnMask(columnCount, projectedColumnList);
 	bool *selectedBlockMask = SelectedBlockMask(stripeSkipList, projectedColumnList,
 												whereClauseList);
 
-	StripeSkipList *selectedBlockSkipList = SelectedBlockSkipList(stripeSkipList,
-																  selectedBlockMask);
+	StripeSkipList *selectedBlockSkipList =
+		SelectedBlockSkipList(stripeSkipList, projectedColumnMask,
+							  selectedBlockMask);
 
 	/* load column data for projected columns */
 	columnBuffersArray = palloc0(columnCount * sizeof(ColumnBuffers *));
@@ -643,6 +648,7 @@ LoadStripeFooter(FILE *tableFile, StripeMetadata *stripeMetadata,
 static StripeSkipList *
 LoadStripeSkipList(FILE *tableFile, StripeMetadata *stripeMetadata,
 				   StripeFooter *stripeFooter, uint32 columnCount,
+				   bool *projectedColumnMask,
 				   Form_pg_attribute *attributeFormArray)
 {
 	StripeSkipList *stripeSkipList = NULL;
@@ -665,15 +671,24 @@ LoadStripeSkipList(FILE *tableFile, StripeMetadata *stripeMetadata,
 	for (columnIndex = 0; columnIndex < stripeColumnCount; columnIndex++)
 	{
 		uint64 columnSkipListSize = stripeFooter->skipListSizeArray[columnIndex];
-		Form_pg_attribute attributeForm = attributeFormArray[columnIndex];
 
-		StringInfo columnSkipListBuffer =
-			ReadFromFile(tableFile, currentColumnSkipListFileOffset, columnSkipListSize);
+		/*
+		 * Only selected columns' stripe skip lists are read. However, the first
+		 * column is read regardless of being selected. It is used by
+		 * StripSkipListRowCount later.
+		 */
+		if (projectedColumnMask[columnIndex] || columnIndex == 0)
+		{
+			Form_pg_attribute attributeForm = attributeFormArray[columnIndex];
 
-		ColumnBlockSkipNode *columnSkipList =
-			DeserializeColumnSkipList(columnSkipListBuffer, attributeForm->attbyval,
-									  attributeForm->attlen, stripeBlockCount);
-		blockSkipNodeArray[columnIndex] = columnSkipList;
+			StringInfo columnSkipListBuffer =
+				ReadFromFile(tableFile, currentColumnSkipListFileOffset,
+							 columnSkipListSize);
+			ColumnBlockSkipNode *columnSkipList =
+				DeserializeColumnSkipList(columnSkipListBuffer, attributeForm->attbyval,
+										  attributeForm->attlen, stripeBlockCount);
+			blockSkipNodeArray[columnIndex] = columnSkipList;
+		}
 
 		currentColumnSkipListFileOffset += columnSkipListSize;
 	}
@@ -683,6 +698,13 @@ LoadStripeSkipList(FILE *tableFile, StripeMetadata *stripeMetadata,
 	{
 		ColumnBlockSkipNode *columnSkipList = NULL;
 		uint32 blockIndex = 0;
+
+		/* no need to create ColumnBlockSkipList if the column is not selected */
+		if (!projectedColumnMask[columnIndex] && columnIndex > 0)
+		{
+			blockSkipNodeArray[columnIndex] = NULL;
+			continue;
+		}
 
 		/* create empty ColumnBlockSkipNode for missing columns*/
 		columnSkipList = palloc0(stripeBlockCount * sizeof(ColumnBlockSkipNode));
@@ -961,7 +983,8 @@ UpdateConstraint(Node *baseConstraint, Datum minValue, Datum maxValue)
  * non-selected blocks are removed from the given stripeSkipList.
  */
 static StripeSkipList *
-SelectedBlockSkipList(StripeSkipList *stripeSkipList, bool *selectedBlockMask)
+SelectedBlockSkipList(StripeSkipList *stripeSkipList, bool *projectedColumnMask,
+					  bool *selectedBlockMask)
 {
 	StripeSkipList *SelectedBlockSkipList = NULL;
 	ColumnBlockSkipNode **selectedBlockSkipNodeArray = NULL;
@@ -982,6 +1005,15 @@ SelectedBlockSkipList(StripeSkipList *stripeSkipList, bool *selectedBlockMask)
 	for (columnIndex = 0; columnIndex < columnCount; columnIndex++)
 	{
 		uint32 selectedBlockIndex = 0;
+
+		if (!projectedColumnMask[columnIndex] && columnIndex > 0)
+		{
+			selectedBlockSkipNodeArray[columnIndex] = NULL;
+			continue;
+		}
+
+		Assert(stripeSkipList->blockSkipNodeArray[columnIndex] != NULL);
+
 		selectedBlockSkipNodeArray[columnIndex] = palloc0(selectedBlockCount *
 														  sizeof(ColumnBlockSkipNode));
 
