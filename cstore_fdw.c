@@ -493,6 +493,8 @@ CopyIntoCStoreTable(const CopyStmt *copyStatement, const char *queryString)
 		}
 
 		MemoryContextReset(tupleContext);
+
+		CHECK_FOR_INTERRUPTS();
 	}
 
 	/* end read/write sessions and close the relation */
