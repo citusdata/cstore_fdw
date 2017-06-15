@@ -28,6 +28,7 @@
 #include "catalog/pg_foreign_table.h"
 #include "catalog/pg_namespace.h"
 #include "commands/copy.h"
+#include "commands/dbcommands.h"
 #include "commands/defrem.h"
 #include "commands/event_trigger.h"
 #include "commands/explain.h"
@@ -46,6 +47,7 @@
 #include "parser/parsetree.h"
 #include "parser/parse_coerce.h"
 #include "parser/parse_type.h"
+#include "storage/fd.h"
 #include "tcop/utility.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
@@ -102,6 +104,7 @@ static bool DistributedWorkerCopy(CopyStmt *copyStatement);
 static void CreateCStoreDatabaseDirectory(Oid databaseOid);
 static bool DirectoryExists(StringInfo directoryName);
 static void CreateDirectory(StringInfo directoryName);
+static void RemoveCStoreDatabaseDirectory(Oid databaseOid);
 static StringInfo OptionNamesString(Oid currentContextId);
 static CStoreFdwOptions * CStoreGetOptions(Oid foreignTableId);
 static char * CStoreGetOptionValue(Oid foreignTableId, const char *optionName);
@@ -230,6 +233,16 @@ cstore_ddl_event_end_trigger(PG_FUNCTION_ARGS)
 			Oid relationId = RangeVarGetRelid(createStatement->base.relation,
 											  AccessShareLock, false);
 			Relation relation = heap_open(relationId, AccessExclusiveLock);
+
+			/*
+			 * Make sure database directory exists before creating a table.
+			 * This is necessary when a foreign server is created inside
+			 * a template database and a new database is created out of it.
+			 * We have no chance to hook into server creation to create data
+			 * directory for it during database creation time.
+			 */
+			CreateCStoreDatabaseDirectory(MyDatabaseId);
+
 			InitializeCStoreTableFile(relationId, relation);
 			heap_close(relation, AccessExclusiveLock);
 		}
@@ -281,17 +294,54 @@ CStoreProcessUtility(Node * parseTree, const char *queryString,
 	}
 	else if (nodeTag(parseTree) == T_DropStmt)
 	{
-		ListCell *fileListCell = NULL;
-		List *droppedTables = DroppedCStoreFilenameList((DropStmt *) parseTree);
+		DropStmt *dropStmt = (DropStmt *) parseTree;
 
-		CALL_PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo,
-							  destReceiver, completionTag);
-
-		foreach(fileListCell, droppedTables)
+		if (dropStmt->removeType == OBJECT_EXTENSION)
 		{
-			char *fileName = lfirst(fileListCell);
+			bool removeCStoreDirectory = false;
+			ListCell *objectCell = NULL;
 
-			DeleteCStoreTableFiles(fileName);
+			foreach(objectCell, dropStmt->objects)
+			{
+				Node *object = (Node *) lfirst(objectCell);
+				char *objectName = NULL;
+
+#if PG_VERSION_NUM >= 100000
+				Assert(IsA(object, String));
+				objectName = strVal(object);
+#else
+				Assert(IsA(object, List));
+				objectName = strVal(linitial((List *) object));
+#endif
+
+				if (strncmp(CSTORE_FDW_NAME, objectName, NAMEDATALEN) == 0)
+				{
+					removeCStoreDirectory = true;
+				}
+			}
+
+			CALL_PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo,
+								  destReceiver, completionTag);
+
+			if (removeCStoreDirectory)
+			{
+				RemoveCStoreDatabaseDirectory(MyDatabaseId);
+			}
+		}
+		else
+		{
+			ListCell *fileListCell = NULL;
+			List *droppedTables = DroppedCStoreFilenameList((DropStmt *) parseTree);
+
+			CALL_PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo,
+								  destReceiver, completionTag);
+
+			foreach(fileListCell, droppedTables)
+			{
+				char *fileName = lfirst(fileListCell);
+
+				DeleteCStoreTableFiles(fileName);
+			}
 		}
 	}
 	else if (nodeTag(parseTree) == T_TruncateStmt)
@@ -316,6 +366,21 @@ CStoreProcessUtility(Node * parseTree, const char *queryString,
 		CStoreProcessAlterTableCommand(alterTable);
 		CALL_PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo,
 							  destReceiver, completionTag);
+	}
+	else if (nodeTag(parseTree) == T_DropdbStmt)
+	{
+		DropdbStmt *dropDdStmt = (DropdbStmt *) parseTree;
+		bool missingOk = true;
+		Oid databaseOid = get_database_oid(dropDdStmt->dbname, missingOk);
+
+		/* let postgres handle error checking and dropping of the database */
+		CALL_PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo,
+							  destReceiver, completionTag);
+
+		if (databaseOid != InvalidOid)
+		{
+			RemoveCStoreDatabaseDirectory(databaseOid);
+		}
 	}
 	/* handle other utility statements */
 	else
@@ -631,7 +696,7 @@ CStoreProcessAlterTableCommand(AlterTableStmt *alterStatement)
 		{
 			char *columnName = alterCommand->name;
 			ColumnDef *columnDef = (ColumnDef *) alterCommand->def;
-			Oid targetTypeId = typenameTypeId(NULL, columnDef->typeName);;
+			Oid targetTypeId = typenameTypeId(NULL, columnDef->typeName);
 			char *typeName = TypeNameToString(columnDef->typeName);
 			AttrNumber attributeNumber = get_attnum(relationId, columnName);
 			Oid currentTypeId = InvalidOid;
@@ -999,6 +1064,27 @@ CreateDirectory(StringInfo directoryName)
 						errmsg("could not create directory \"%s\": %m",
 							   directoryName->data)));
 	}
+}
+
+
+/*
+ * RemoveCStoreDatabaseDirectory removes CStore directory previously
+ * created for this database. 
+ * However it does not remove 'cstore_fdw' directory even if there
+ * are no other databases left.
+ */
+static void
+RemoveCStoreDatabaseDirectory(Oid databaseOid)
+{
+	StringInfo cstoreDirectoryPath = makeStringInfo();
+	StringInfo cstoreDatabaseDirectoryPath = makeStringInfo();
+
+	appendStringInfo(cstoreDirectoryPath, "%s/%s", DataDir, CSTORE_FDW_NAME);
+
+	appendStringInfo(cstoreDatabaseDirectoryPath, "%s/%s/%u", DataDir,
+					 CSTORE_FDW_NAME, databaseOid);
+
+	rmtree(cstoreDatabaseDirectoryPath->data, true);
 }
 
 
