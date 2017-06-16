@@ -52,9 +52,11 @@ SELECT * from cstore_truncate_test_second;
 SELECT * from cstore_truncate_test_regular;
 
 -- make sure multi truncate works
-TRUNCATE TABLE cstore_truncate_test, 
+-- notice that the same table might be repeated
+TRUNCATE TABLE cstore_truncate_test,
 			   cstore_truncate_test_regular,
-			   cstore_truncate_test_second;
+			   cstore_truncate_test_second,
+   			   cstore_truncate_test;
 
 SELECT * from cstore_truncate_test;
 SELECT * from cstore_truncate_test_second;
@@ -67,3 +69,50 @@ SELECT * from cstore_truncate_test;
 DROP FOREIGN TABLE cstore_truncate_test, cstore_truncate_test_second;
 DROP TABLE cstore_truncate_test_regular;
 DROP FOREIGN TABLE cstore_truncate_test_compressed;
+
+-- test truncate with schema
+CREATE SCHEMA truncate_schema;
+CREATE FOREIGN TABLE truncate_schema.truncate_tbl (id int) SERVER cstore_server OPTIONS(compression 'pglz');
+INSERT INTO truncate_schema.truncate_tbl SELECT generate_series(1, 100);
+SELECT COUNT(*) FROM truncate_schema.truncate_tbl;
+
+TRUNCATE TABLE truncate_schema.truncate_tbl;
+SELECT COUNT(*) FROM truncate_schema.truncate_tbl;
+
+INSERT INTO truncate_schema.truncate_tbl SELECT generate_series(1, 100);
+
+-- create a user that can not truncate
+CREATE USER truncate_user;
+GRANT USAGE ON SCHEMA truncate_schema TO truncate_user;
+GRANT SELECT ON TABLE truncate_schema.truncate_tbl TO truncate_user;
+REVOKE TRUNCATE ON TABLE truncate_schema.truncate_tbl FROM truncate_user;
+
+SELECT current_user \gset
+
+\c - truncate_user
+-- verify truncate command fails and check number of rows
+SELECT count(*) FROM truncate_schema.truncate_tbl;
+TRUNCATE TABLE truncate_schema.truncate_tbl;
+SELECT count(*) FROM truncate_schema.truncate_tbl;
+
+-- switch to super user, grant truncate to truncate_user 
+\c - :current_user
+GRANT TRUNCATE ON TABLE truncate_schema.truncate_tbl TO truncate_user;
+
+-- verify truncate_user can truncate now
+\c - truncate_user
+SELECT count(*) FROM truncate_schema.truncate_tbl;
+TRUNCATE TABLE truncate_schema.truncate_tbl;
+SELECT count(*) FROM truncate_schema.truncate_tbl;
+
+\c - :current_user
+
+-- cleanup
+DROP SCHEMA truncate_schema CASCADE;
+DROP USER truncate_user;
+
+-- verify files are removed
+SELECT count(*) FROM (
+	SELECT pg_ls_dir('cstore_fdw/' || databaseoid ) FROM (
+	SELECT oid::text databaseoid FROM pg_database WHERE datname = current_database()
+	) AS q1) AS q2;
