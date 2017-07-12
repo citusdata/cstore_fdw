@@ -671,13 +671,14 @@ LoadStripeSkipList(FILE *tableFile, StripeMetadata *stripeMetadata,
 	for (columnIndex = 0; columnIndex < stripeColumnCount; columnIndex++)
 	{
 		uint64 columnSkipListSize = stripeFooter->skipListSizeArray[columnIndex];
+		bool firstColumn = columnIndex == 0;
 
 		/*
-		 * Only selected columns' stripe skip lists are read. However, the first
-		 * column is read regardless of being selected. It is used by
-		 * StripSkipListRowCount later.
+		 * Only selected columns' column skip lists are read. However, the first
+		 * column's skip list is read regardless of being selected. It is used by
+		 * StripeSkipListRowCount later.
 		 */
-		if (projectedColumnMask[columnIndex] || columnIndex == 0)
+		if (projectedColumnMask[columnIndex] || firstColumn)
 		{
 			Form_pg_attribute attributeForm = attributeFormArray[columnIndex];
 
@@ -698,9 +699,10 @@ LoadStripeSkipList(FILE *tableFile, StripeMetadata *stripeMetadata,
 	{
 		ColumnBlockSkipNode *columnSkipList = NULL;
 		uint32 blockIndex = 0;
+		bool firstColumn = columnIndex == 0;
 
 		/* no need to create ColumnBlockSkipList if the column is not selected */
-		if (!projectedColumnMask[columnIndex] && columnIndex > 0)
+		if (!projectedColumnMask[columnIndex] && !firstColumn)
 		{
 			blockSkipNodeArray[columnIndex] = NULL;
 			continue;
@@ -1005,8 +1007,10 @@ SelectedBlockSkipList(StripeSkipList *stripeSkipList, bool *projectedColumnMask,
 	for (columnIndex = 0; columnIndex < columnCount; columnIndex++)
 	{
 		uint32 selectedBlockIndex = 0;
+		bool firstColumn = columnIndex == 0;
 
-		if (!projectedColumnMask[columnIndex] && columnIndex > 0)
+		/* first column's block skip node is always read */
+		if (!projectedColumnMask[columnIndex] && !firstColumn)
 		{
 			selectedBlockSkipNodeArray[columnIndex] = NULL;
 			continue;
