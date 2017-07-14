@@ -94,7 +94,8 @@ static uint64 CopyOutCStoreTable(CopyStmt* copyStatement, const char* queryStrin
 static void CStoreProcessAlterTableCommand(AlterTableStmt *alterStatement);
 static List * DroppedCStoreFilenameList(DropStmt *dropStatement);
 static List * FindCStoreTables(List *tableList);
-static void TruncateCStoreTables(List *cstoreTableList);
+static List * OpenRelationsForTruncate(List *cstoreTableList);
+static void TruncateCStoreTables(List *cstoreRelationList);
 static void DeleteCStoreTableFiles(char *filename);
 static void InitializeCStoreTableFile(Oid relationId, Relation relation);
 static bool CStoreTable(Oid relationId);
@@ -350,6 +351,9 @@ CStoreProcessUtility(Node * parseTree, const char *queryString,
 		List *allTablesList = truncateStatement->relations;
 		List *cstoreTablesList = FindCStoreTables(allTablesList);
 		List *otherTablesList = list_difference(allTablesList, cstoreTablesList);
+		List *cstoreRelationList = OpenRelationsForTruncate(cstoreTablesList);
+		ListCell *cstoreRelationCell = NULL;
+
 		if (otherTablesList != NIL)
 		{
 			truncateStatement->relations = otherTablesList;
@@ -358,7 +362,13 @@ CStoreProcessUtility(Node * parseTree, const char *queryString,
 								  destReceiver, completionTag);
 		}
 
-		TruncateCStoreTables(cstoreTablesList);
+		TruncateCStoreTables(cstoreRelationList);
+
+		foreach(cstoreRelationCell, cstoreRelationList)
+		{
+			Relation relation = (Relation) lfirst(cstoreRelationCell);
+			heap_close(relation, AccessExclusiveLock);
+		}
 	}
 	else if (nodeTag(parseTree) == T_AlterTableStmt)
 	{
@@ -786,24 +796,62 @@ FindCStoreTables(List *tableList)
 }
 
 
-/* TruncateCStoreTable truncates given cstore tables */
-static void
-TruncateCStoreTables(List *cstoreTableList)
+/* 
+ * OpenRelationsForTruncate opens and locks relations for tables to be truncated.
+ *
+ * It also performs a permission checks to see if the user has truncate privilege
+ * on tables.
+ */
+static List *
+OpenRelationsForTruncate(List *cstoreTableList)
 {
 	ListCell *relationCell = NULL;
+	List *relationIdList = NIL;
+	List *relationList = NIL;
 	foreach(relationCell, cstoreTableList)
 	{
 		RangeVar *rangeVar = (RangeVar *) lfirst(relationCell);
-		Oid relationId = RangeVarGetRelid(rangeVar, AccessShareLock, true);
-		Relation relation = NULL;
+		Relation relation = heap_openrv(rangeVar, AccessExclusiveLock);
+		Oid relationId = relation->rd_id;
+		AclResult aclresult = pg_class_aclcheck(relationId, GetUserId(),
+											   ACL_TRUNCATE);
+		if (aclresult != ACLCHECK_OK)
+		{
+			aclcheck_error(aclresult, ACL_KIND_CLASS, get_rel_name(relationId));
+		}
+
+		/* check if this relation is repeated */
+		if (list_member_oid(relationIdList, relationId))
+		{
+			heap_close(relation, AccessExclusiveLock);
+		}
+		else
+		{
+			relationIdList = lappend_oid(relationIdList, relationId);
+			relationList = lappend(relationList, relation);
+		}
+	}
+
+	return relationList;
+}
+
+
+/* TruncateCStoreTable truncates given cstore tables */
+static void
+TruncateCStoreTables(List *cstoreRelationList)
+{
+	ListCell *relationCell = NULL;
+	foreach(relationCell, cstoreRelationList)
+	{
+		Relation relation = (Relation) lfirst(relationCell);
+		Oid relationId = relation->rd_id;
 		CStoreFdwOptions *cstoreFdwOptions = NULL;
 
 		Assert(CStoreTable(relationId));
-		relation = heap_open(relationId, AccessExclusiveLock);
+
 		cstoreFdwOptions = CStoreGetOptions(relationId);
 		DeleteCStoreTableFiles(cstoreFdwOptions->filename);
 		InitializeCStoreTableFile(relationId, relation);
-		heap_close(relation, AccessExclusiveLock);
 	}
 }
 
@@ -862,6 +910,7 @@ static void InitializeCStoreTableFile(Oid relationId, Relation relation)
 			cstoreFdwOptions->blockRowCount, tupleDescriptor);
 	CStoreEndWrite(writeState);
 }
+
 
 
 /*
