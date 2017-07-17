@@ -153,7 +153,6 @@ CStoreBeginWrite(Relation relation, CompressionType compressionType,
 											   ALLOCSET_DEFAULT_INITSIZE,
 											   ALLOCSET_DEFAULT_MAXSIZE);
 
-	/* make sure file for data storage exists */
 	EnsureDataForkExists(relation, logging);
 
 	columnMaskArray = palloc(columnCount * sizeof(bool));
@@ -182,12 +181,16 @@ CStoreBeginWrite(Relation relation, CompressionType compressionType,
 
 
 /*
- * EnsureDataForkExists checks if data fork exists for writing data,
- * and creates if it is not present.
+ * EnsureDataForkExists checks if data fork exists for writing data, and
+ * creates if it is not present. Relation must be previously opened with
+ * exclusive lock (AccessExclusive or ShareUpdateExclusive).
  */
 static void EnsureDataForkExists(Relation relation, bool logging)
 {
-	SMgrRelation srel = smgropen(relation->rd_node, InvalidBackendId);
+	SMgrRelation srel = NULL;
+
+	RelationOpenSmgr(relation);
+	srel = (SMgrRelation) relation->rd_smgr;
 
 	if (!smgrexists(srel, DATA_FORKNUM))
 	{
@@ -200,7 +203,8 @@ static void EnsureDataForkExists(Relation relation, bool logging)
 	}
 
 	Assert(smgrexists(srel, DATA_FORKNUM));
-	smgrclose(srel);
+
+	RelationCloseSmgr(relation);
 }
 
 
@@ -1068,6 +1072,7 @@ WriteToFile(TableWriteState *writeState, void *data, uint32 dataLength)
 	int dataOffset = 0;
 	Relation relation = writeState->relation;
 	BlockNumber blockCount = RelationGetNumberOfBlocksInFork(relation, DATA_FORKNUM);
+	BufferAccessStrategy strategy = GetAccessStrategy(BAS_BULKWRITE);
 
 	if (dataLength == 0)
 	{
@@ -1089,7 +1094,8 @@ WriteToFile(TableWriteState *writeState, void *data, uint32 dataLength)
 			blockNumber = P_NEW;
 		}
 
-		buffer = ReadBufferExtended(relation, DATA_FORKNUM, blockNumber, RBM_NORMAL, NULL);
+		buffer = ReadBufferExtended(relation, DATA_FORKNUM, blockNumber, RBM_NORMAL,
+									strategy);
 
 		LockBuffer(buffer, BUFFER_LOCK_EXCLUSIVE);
 		page = BufferGetPage(buffer);
@@ -1123,9 +1129,9 @@ WriteToFile(TableWriteState *writeState, void *data, uint32 dataLength)
 		dataOffset += copySize;
 
 		pageHeader->pd_lower += copySize;
-		if (pageHeader->pd_lower >= pageHeader->pd_upper)
+		if (pageHeader->pd_lower == pageHeader->pd_upper)
 		{
-			pageHeader->pd_flags |= PD_PAGE_FULL;
+			PageSetFull(page);
 		}
 
 		MarkBufferDirty(buffer);

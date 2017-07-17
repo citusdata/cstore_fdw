@@ -17,9 +17,9 @@ DATA = cstore_fdw--1.5.sql cstore_fdw--1.4--1.5.sql cstore_fdw--1.3--1.4.sql \
 REGRESS = create load query analyze data_types functions block_filtering drop \
 		  insert copyto alter truncate
 EXTRA_CLEAN = cstore.pb-c.h cstore.pb-c.c data/*.cstore data/*.cstore.footer \
-              sql/block_filtering.sql sql/data_types.sql sql/load.sql \
+			  sql/block_filtering.sql sql/data_types.sql sql/load.sql \
 			  sql/copyto.sql expected/block_filtering.out \
-              expected/data_types.out expected/load.out expected/copyto.out
+			  expected/data_types.out expected/load.out expected/copyto.out
 
 ifeq ($(enable_coverage),yes)
 	PG_CPPFLAGS += --coverage

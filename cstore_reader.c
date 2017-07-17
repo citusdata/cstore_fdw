@@ -106,7 +106,8 @@ CStoreBeginRead(Relation relation, TupleDesc tupleDescriptor,
 
 	if (tableFooter == NULL)
 	{
-		ereport(ERROR, (errmsg("Could not read table file.")));
+		ereport(ERROR, (errcode(ERRCODE_FDW_ERROR),
+						errmsg("Could not read table file.")));
 	}
 
 	/*
@@ -215,7 +216,8 @@ CStoreReadFooter(Relation relation)
  * metadata about footer data. The function validates the metadata, reads
  * footer data from where it is stored and returns it.
  */
-static StringInfo ReadFooterData(Relation relation)
+static StringInfo
+ReadFooterData(Relation relation)
 {
 	int32 fileLength = 0;
 	BlockNumber totalBlockCount = 0;
@@ -277,6 +279,8 @@ static StringInfo ReadFooterData(Relation relation)
 
 	appendBinaryStringInfo(footerData, pageData + headerLength, pageDataLength);
 
+	UnlockReleaseBuffer(firstBuffer);
+
 	for (blockIndex = 1; blockIndex < blockCount; blockIndex++)
 	{
 		Buffer buffer = ReadBufferExtended(relation, FOOTER_FORKNUM,
@@ -292,7 +296,6 @@ static StringInfo ReadFooterData(Relation relation)
 		ReleaseBuffer(buffer);
 	}
 
-	UnlockReleaseBuffer(firstBuffer);
 	UnlockReleaseBuffer(headerBuffer);
 
 	return footerData;
@@ -484,7 +487,7 @@ CStoreTableRowCount(Relation relation)
 
 	if (tableFooter == NULL)
 	{
-		ereport(ERROR, (errmsg("Could not read table file.")));
+		ereport(ERROR, (ERRCODE_FDW_ERROR, errmsg("Could not read table file.")));
 	}
 
 	foreach(stripeMetadataCell, tableFooter->stripeMetadataList)
@@ -1369,10 +1372,11 @@ ReadFromFile(Relation relation, uint64 offset, uint32 size)
 	uint32 resultOffset = 0;
 	uint32 blockCount = 0;
 	StringInfo resultBuffer = NULL;
+	BufferAccessStrategy strategy = GetAccessStrategy(BAS_BULKREAD);
 
 	if (size == 0)
 	{
-		return resultBuffer;
+		return NULL;
 	}
 
 	resultBuffer = makeStringInfo();
@@ -1381,30 +1385,28 @@ ReadFromFile(Relation relation, uint64 offset, uint32 size)
 	blockCount = RelationGetNumberOfBlocksInFork(relation,DATA_FORKNUM);
 	if (blockNumber > blockCount)
 	{
-		ereport(ERROR, (errmsg("could not read from file")));
+		ereport(ERROR, (errcode(ERRCODE_FDW_ERROR),
+						errmsg("could not read from file")));
 	}
 
 	while (remainingSize > 0)
 	{
 		Buffer buffer = ReadBufferExtended(relation, DATA_FORKNUM, blockNumber,
-										   RBM_NORMAL, NULL);
+										   RBM_NORMAL, strategy);
 		Page page = NULL;
 		Size pageSize = 0;
 		char *pageContents = NULL;
 		PageHeader pageHeader = NULL;
-
-		if (buffer == InvalidBuffer)
-		{
-			ereport(ERROR, (errmsg("could not read enough data from file")));
-		}
+		uint32 bufferSize = 0;
+		uint32 copySize = remainingSize;
 
 		LockBuffer(buffer, BUFFER_LOCK_SHARE);
+
 		page = BufferGetPage(buffer);
-		pageHeader = (PageHeader ) page;
+		pageHeader = (PageHeader) page;
 		pageSize = PageGetPageSize(page);
 		pageContents = PageGetContents(page);
-		uint32 bufferSize = pageHeader->pd_lower - SizeOfPageHeaderData;
-		uint32 copySize = remainingSize;
+		bufferSize = pageHeader->pd_lower - SizeOfPageHeaderData;
 
 		if (copySize > (bufferSize - blockOffset))
 		{
@@ -1415,11 +1417,6 @@ ReadFromFile(Relation relation, uint64 offset, uint32 size)
 		remainingSize -= copySize;
 
 		UnlockReleaseBuffer(buffer);
-
-		if (remainingSize == 0)
-		{
-			break;
-		}
 
 		blockNumber++;
 		blockOffset = 0;

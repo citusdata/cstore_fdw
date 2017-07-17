@@ -46,7 +46,7 @@ SerializePostScript(uint64 tableFooterLength)
 	protobufPostScript.versionmajor = CSTORE_VERSION_MAJOR;
 	protobufPostScript.has_versionminor = true;
 	protobufPostScript.versionminor = CSTORE_VERSION_MINOR;
-	protobufPostScript.magicnumber = pstrdup(CSTORE_MAGIC_NUMBER);
+	protobufPostScript.magicnumber = CSTORE_MAGIC_NUMBER;
 
 	postscriptSize = protobuf__post_script__get_packed_size(&protobufPostScript);
 	postscriptData = palloc0(postscriptSize);
@@ -622,7 +622,8 @@ DeserializeTableFooterMetadata(const char *data, uint32 length, uint32 *starting
 	if (majorVersion != CSTORE_VERSION_MAJOR ||
 		minorVersion != CSTORE_VERSION_MINOR)
 	{
-		ereport(ERROR, (errmsg("Unsupported cstore_fdw version")));
+		ereport(ERROR, (errmsg("relation has unsupported cstore_fdw version %u.%u",
+							   majorVersion, majorVersion)));
 	}
 
 	memcpy(startingPage, data + offset, sizeof(uint32));
@@ -649,8 +650,8 @@ SerializeTableFooterMetadata(uint32 startingPage, uint32 pageCount)
 						   strnlen(CSTORE_MAGIC_NUMBER, NAMEDATALEN));
 	appendBinaryStringInfo(resultString, (char *) &majorVersion, sizeof(uint32));
 	appendBinaryStringInfo(resultString, (char *) &minorVersion, sizeof(uint32));
-	appendBinaryStringInfo(resultString, (char *)  &startingPage, sizeof(uint32));
-	appendBinaryStringInfo(resultString, (char *)  &pageCount, sizeof(uint32));
+	appendBinaryStringInfo(resultString, (char *) &startingPage, sizeof(uint32));
+	appendBinaryStringInfo(resultString, (char *) &pageCount, sizeof(uint32));
 
 	return resultString;
 }

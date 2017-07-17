@@ -65,7 +65,7 @@ ALTER TABLE public.pg_cstore_tables SET SCHEMA pg_catalog;
 
 CREATE OR REPLACE FUNCTION public.register_cstore_table(table_name oid)
 	RETURNS boolean
-	LANGUAGE plpgsql
+	LANGUAGE plpgsql STRICT
 	AS $rct$
 BEGIN
     IF EXISTS(
@@ -82,13 +82,13 @@ BEGIN
 		RETURN true;
 	END IF;
 
-	return false;
+	RETURN false;
 END;
 $rct$;
 
 CREATE OR REPLACE FUNCTION public.unregister_cstore_table(table_name oid)
 	RETURNS void
-	LANGUAGE plpgsql
+	LANGUAGE plpgsql STRICT
 	AS $uct$
 BEGIN
 	DELETE FROM pg_cstore_tables WHERE logicalrelid = table_name;

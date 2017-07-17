@@ -48,6 +48,7 @@
 #include "parser/parser.h"
 #include "parser/parsetree.h"
 #include "parser/parse_coerce.h"
+#include "parser/parse_func.h"
 #include "parser/parse_type.h"
 #include "storage/bufmgr.h"
 #include "tcop/utility.h"
@@ -98,7 +99,7 @@ static uint64 CopyIntoCStoreTable(const CopyStmt *copyStatement,
 								  const char *queryString);
 static uint64 CopyOutCStoreTable(CopyStmt* copyStatement, const char* queryString);
 static void CStoreProcessAlterTableCommand(AlterTableStmt *alterStatement);
-static List * CStoreTableList();
+static List * CStoreTableList(void);
 static void RemoveRelationStorage(Oid relationId);
 static List * FindCStoreTables(List *tableList);
 static List * OpenRelationsForTruncate(List *cstoreTableList);
@@ -226,7 +227,7 @@ cstore_ddl_event_end_trigger(PG_FUNCTION_ARGS)
 											  AccessShareLock, false);
 			Relation relation = heap_open(relationId, AccessExclusiveLock);
 
-			RelationCreateStorage(relation->rd_node, RELPERSISTENCE_PERMANENT);
+			RelationCreateStorage(relation->rd_node, relation->rd_rel->relpersistence);
 
 			InitializeCStoreTableFile(relationId, relation);
 			heap_close(relation, AccessExclusiveLock);
@@ -246,41 +247,15 @@ cstore_ddl_event_end_trigger(PG_FUNCTION_ARGS)
 static void
 RegisterCStoreTable(Oid relationId)
 {
-	Oid functionOid = InvalidOid;
 	char *schemaName = "public";
 	char *functionName = "register_cstore_table";
-	char *qualifiedFunctionName = NULL;
-	List *qualifiedFunctionNameList = NIL;
-	FuncCandidateList functionList = NULL;
 	int argumentCount = 1;
-	List *argumentNames = NIL;
-	bool expandVariadic = false;
-	bool expandDefaults = false;
-#if PG_VERSION_NUM >= 90400
-	bool missingOK = true;
-#endif
-
-	qualifiedFunctionName = quote_qualified_identifier(schemaName, functionName);
-	qualifiedFunctionNameList = stringToQualifiedNameList(qualifiedFunctionName);
-	functionList = FuncnameGetCandidates(qualifiedFunctionNameList, argumentCount,
-										 argumentNames, expandVariadic,
-										 expandDefaults
-#if PG_VERSION_NUM >= 90400
-										 , missingOK
-#endif
-										 );
-	if (functionList == NULL)
-	{
-		ereport(ERROR, (errcode(ERRCODE_UNDEFINED_FUNCTION),
-						errmsg("function \"%s\" does not exist", functionName)));
-	}
-	else if (functionList->next != NULL)
-	{
-		ereport(ERROR, (errcode(ERRCODE_AMBIGUOUS_FUNCTION),
-						errmsg("more than one function named \"%s\"", functionName)));
-	}
-
-	functionOid = functionList->oid;
+	const Oid argumentTypes[] = {OIDOID};
+	bool errorOK = false;
+	char *qualifiedFunctionName = quote_qualified_identifier(schemaName, functionName);
+	List *qualifiedFunctionNameList = stringToQualifiedNameList(qualifiedFunctionName);
+	Oid functionOid = LookupFuncName(qualifiedFunctionNameList, argumentCount,
+									 argumentTypes, errorOK);
 
 	OidFunctionCall1(functionOid, ObjectIdGetDatum(relationId));
 }
@@ -332,9 +307,9 @@ CStoreProcessUtility(Node * parseTree, const char *queryString,
 
 		if (dropStmt->removeType == OBJECT_EXTENSION)
 		{
-			bool removeCStoreRelationFiles = false;
 			ListCell *objectCell = NULL;
 			List *cstoreTableList = NIL;
+			ListCell *relationIdCell = NULL;
 
 			foreach(objectCell, dropStmt->objects)
 			{
@@ -348,29 +323,21 @@ CStoreProcessUtility(Node * parseTree, const char *queryString,
 				Assert(IsA(object, List));
 				objectName = strVal(linitial((List *) object));
 #endif
-
+				/* record cstore relation ids if cstore extension is to be dropped */
 				if (strncmp(CSTORE_FDW_NAME, objectName, NAMEDATALEN) == 0)
 				{
-					removeCStoreRelationFiles = true;
+					cstoreTableList = CStoreTableList();
 				}
-			}
-
-			if (removeCStoreRelationFiles)
-			{
-				cstoreTableList = CStoreTableList();
 			}
 
 			CALL_PREVIOUS_UTILITY(parseTree, queryString, context,
 					paramListInfo, destReceiver, completionTag);
 
-			if (cstoreTableList != NIL)
+			/* mark cached cstore relations' storage for deletion*/
+			foreach(relationIdCell, cstoreTableList)
 			{
-				ListCell *relationIdCell;
-				foreach(relationIdCell, cstoreTableList)
-				{
-					Oid relationId = lfirst_oid(relationIdCell);
-					RemoveRelationStorage(relationId);
-				}
+				Oid relationId = lfirst_oid(relationIdCell);
+				RemoveRelationStorage(relationId);
 			}
 		}
 		else
@@ -754,7 +721,7 @@ CStoreProcessAlterTableCommand(AlterTableStmt *alterStatement)
 
 /* CStoreTableList returns oids of cstore_fdw tables stored in pg_cstore_tables */
 static List *
-CStoreTableList()
+CStoreTableList(void)
 {
 	List *cstoreRelationIdList = NIL;
 	Oid cstoreTablesOid = InvalidOid;
