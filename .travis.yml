@@ -1,5 +1,10 @@
+sudo: required
+dist: trusty
 language: c
-cache: apt
+cache:
+  apt: true
+  directories:
+    - /home/travis/postgresql
 env:
   global:
     - enable_coverage=yes
@@ -9,11 +14,11 @@ env:
     - PGVERSION=9.4
     - PGVERSION=9.5
     - PGVERSION=9.6
+    - PGVERSION=10
 before_install:
-  - sudo apt-get update -qq
-  - sudo update-alternatives --remove-all postmaster.1.gz
-  - git clone -b v0.6.1 --depth 1 https://github.com/citusdata/tools.git
+  - git clone -b v0.6.3 --depth 1 https://github.com/citusdata/tools.git
   - sudo make -C tools install
+  - setup_apt
   - nuke_pg
 install:
   - sudo apt-get install protobuf-c-compiler
@@ -22,6 +27,7 @@ install:
   - sudo locale-gen da_DK.utf8
   - sudo pip install cpp-coveralls
   - install_pg
+  - install_custom_pg
 before_script:
   - chmod 777 .
   - chmod 777 data
