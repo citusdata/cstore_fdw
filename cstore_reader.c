@@ -789,7 +789,11 @@ SelectedBlockMask(StripeSkipList *stripeSkipList, List *projectedColumnList,
 							 blockSkipNode->maximumValue);
 
 			constraintList = list_make1(baseConstraint);
+#if (PG_VERSION_NUM >= 100000)
+			predicateRefuted = predicate_refuted_by(constraintList, restrictInfoList, false);
+#else
 			predicateRefuted = predicate_refuted_by(constraintList, restrictInfoList);
+#endif
 			if (predicateRefuted)
 			{
 				selectedBlockMask[blockIndex] = false;
