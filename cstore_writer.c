@@ -322,30 +322,30 @@ CStoreWriteRow(TableWriteState *writeState, Datum *columnValues, bool *columnNul
 
 
 /*
- * CStoreEndWrite finishes a cstore data load operation. If we have an unflushed
- * stripe, we flush it. Then, we sync and close the cstore data file. Last, we
- * flush the footer to a temporary file, and atomically rename this temporary
- * file to the original footer file.
+ * CStoreEndWrite finishes a cstore data load operation. If there is an unflushed
+ * stripe, it is flushed first.
  */
 void
 CStoreEndWrite(TableWriteState *writeState)
 {
 	int columnCount = writeState->tupleDescriptor->natts;
 	StripeBuffers *stripeBuffers = writeState->stripeBuffers;
+	MemoryContext oldContext = MemoryContextSwitchTo(writeState->stripeWriteContext);
 
 	if (stripeBuffers != NULL)
 	{
-		MemoryContext oldContext = MemoryContextSwitchTo(writeState->stripeWriteContext);
 		StripeMetadata stripeMetadata = FlushStripe(writeState);
 
-		MemoryContextReset(writeState->stripeWriteContext);
-
+		/* tableFooter lives in 'higher' memory context */
 		MemoryContextSwitchTo(oldContext);
 		AppendStripeMetadata(writeState->tableFooter, stripeMetadata);
+		MemoryContextSwitchTo(writeState->stripeWriteContext);
 	}
 
 	CStoreWriteFooter(writeState->tableFooter, writeState->relation,
 					  writeState->logging);
+
+	MemoryContextSwitchTo(oldContext);
 
 	MemoryContextDelete(writeState->stripeWriteContext);
 	list_free_deep(writeState->tableFooter->stripeMetadataList);
@@ -363,7 +363,8 @@ CStoreEndWrite(TableWriteState *writeState)
  * After preparing the footer data the function reads the current footer
  * metadata to decide where to write to make sure that the current footer data
  * is not overwritten. It writes the footer data to correct place and finally
- * updates footer metadata about where footer data is stored.
+ * updates footer metadata about where footer data is stored. Reclamation of
+ * created StringInfo buffers are performed in caller function's memory context.
  */
 static void
 CStoreWriteFooter(TableFooter *tableFooter, Relation relation, bool loggingEnabled)
@@ -534,17 +535,6 @@ CStoreWriteFooter(TableFooter *tableFooter, Relation relation, bool loggingEnabl
 	END_CRIT_SECTION();
 
 	UnlockReleaseBuffer(headerBuffer);
-
-	pfree(tableFooterBuffer->data);
-	pfree(tableFooterBuffer);
-	pfree(postscriptBuffer->data);
-	pfree(postscriptBuffer);
-
-	pfree(wholeFooter->data);
-	pfree(wholeFooter);
-
-	pfree(tableFooterMetadata->data);
-	pfree(tableFooterMetadata);
 }
 
 

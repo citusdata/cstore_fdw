@@ -56,6 +56,9 @@
 #include "utils/fmgroids.h"
 #include "utils/memutils.h"
 #include "utils/lsyscache.h"
+#if PG_VERSION_NUM >= 100000
+#include "utils/regproc.h"
+#endif
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
 #include "utils/tqual.h"
@@ -247,11 +250,11 @@ cstore_ddl_event_end_trigger(PG_FUNCTION_ARGS)
 static void
 RegisterCStoreTable(Oid relationId)
 {
-	char *schemaName = "public";
-	char *functionName = "register_cstore_table";
-	int argumentCount = 1;
+	const char *schemaName = "public";
+	const char *functionName = "register_cstore_table";
+	const int argumentCount = 1;
 	const Oid argumentTypes[] = {OIDOID};
-	bool errorOK = false;
+	const bool errorOK = false;
 	char *qualifiedFunctionName = quote_qualified_identifier(schemaName, functionName);
 	List *qualifiedFunctionNameList = stringToQualifiedNameList(qualifiedFunctionName);
 	Oid functionOid = LookupFuncName(qualifiedFunctionNameList, argumentCount,
@@ -1141,11 +1144,7 @@ cstore_fdw_validator(PG_FUNCTION_ARGS)
 
 /*
  * cstore_clean_table_resources cleans up table data and metadata with provided
- * relation id. The function is meant to be called from drop_event_trigger. It
- * has no way of knowing if the provided relation id belongs to a cstore table.
- * Therefore it first checks if data file exists at default location before
- * attempting to remove data and footer files. If the table is created at a
- * custom path than its resources would not be removed.
+ * relation id. The function is meant to be called from drop_event_trigger.
  */
 Datum
 cstore_clean_table_resources(PG_FUNCTION_ARGS)
