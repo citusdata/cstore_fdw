@@ -1710,7 +1710,6 @@ static void
 CStoreBeginForeignScan(ForeignScanState *scanState, int executorFlags)
 {
 	TableReadState *readState = NULL;
-	Oid foreignTableId = InvalidOid;
 	TupleTableSlot *tupleSlot = scanState->ss.ss_ScanTupleSlot;
 	TupleDesc tupleDescriptor = tupleSlot->tts_tupleDescriptor;
 	List *columnList = NIL;
@@ -1724,8 +1723,6 @@ CStoreBeginForeignScan(ForeignScanState *scanState, int executorFlags)
 	{
 		return;
 	}
-
-	foreignTableId = RelationGetRelid(currentRelation);
 
 	foreignScan = (ForeignScan *) scanState->ss.ps.plan;
 	foreignPrivateList = (List *) foreignScan->fdw_private;

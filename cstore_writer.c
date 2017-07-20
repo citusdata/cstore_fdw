@@ -378,7 +378,7 @@ CStoreWriteFooter(TableFooter *tableFooter, Relation relation, bool loggingEnabl
 	StringInfo wholeFooter = makeStringInfo();
 	int32 dataLength = 0;
 	int32 dataOffset = 0;
-	int32 blockDataSize =  CSTORE_PAGE_DATA_SIZE;
+	const int32 blockDataSize =  CSTORE_PAGE_DATA_SIZE;
 	BlockNumber headerBlockNumber = InvalidBlockNumber;
 	Buffer headerBuffer = InvalidBuffer;
 	Page headerPage = NULL;
@@ -473,8 +473,7 @@ CStoreWriteFooter(TableFooter *tableFooter, Relation relation, bool loggingEnabl
 		Page page;
 		PageHeader pageHeader = NULL;
 		char * pageData = NULL;
-		BlockNumber actualBlockNumber = InvalidBlockNumber;
-
+		int copySize = blockDataSize;
 
 		if (blockNumber >= originalBlockCount)
 		{
@@ -491,8 +490,6 @@ CStoreWriteFooter(TableFooter *tableFooter, Relation relation, bool loggingEnabl
 		PageInit(page, BLCKSZ, 0);
 		pageData = PageGetContents(page);
 
-		int copySize = blockDataSize;
-
 		if ( (dataLength - dataOffset) <= blockDataSize)
 		{
 			copySize = dataLength - dataOffset;
@@ -503,7 +500,7 @@ CStoreWriteFooter(TableFooter *tableFooter, Relation relation, bool loggingEnabl
 		memcpy(pageData, wholeFooter->data + dataOffset, copySize);
 
 		MarkBufferDirty(buffer);
-		actualBlockNumber = BufferGetBlockNumber(buffer);
+
 		if (loggingEnabled)
 		{
 			LOG_NEWPAGE_BUFFER(buffer);

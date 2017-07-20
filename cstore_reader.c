@@ -1394,7 +1394,6 @@ ReadFromFile(Relation relation, uint64 offset, uint32 size)
 		Buffer buffer = ReadBufferExtended(relation, DATA_FORKNUM, blockNumber,
 										   RBM_NORMAL, strategy);
 		Page page = NULL;
-		Size pageSize = 0;
 		char *pageContents = NULL;
 		PageHeader pageHeader = NULL;
 		uint32 bufferSize = 0;
@@ -1404,7 +1403,6 @@ ReadFromFile(Relation relation, uint64 offset, uint32 size)
 
 		page = BufferGetPage(buffer);
 		pageHeader = (PageHeader) page;
-		pageSize = PageGetPageSize(page);
 		pageContents = PageGetContents(page);
 		bufferSize = pageHeader->pd_lower - SizeOfPageHeaderData;
 
