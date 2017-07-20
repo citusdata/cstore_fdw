@@ -1,9 +1,4 @@
-/* cstore_fdw/cstore_fdw--1.4--1.5.sql */
-
-CREATE FUNCTION cstore_clean_table_resources(oid)
-RETURNS void
-AS 'MODULE_PATHNAME'
-LANGUAGE C STRICT;
+/* cstore_fdw/cstore_fdw--1.5--1.6.sql */
 
 CREATE OR REPLACE FUNCTION cstore_drop_trigger()
 	RETURNS event_trigger
@@ -17,12 +12,8 @@ BEGIN
 			CONTINUE;
 		END IF;
 
-		PERFORM cstore_clean_table_resources(v_obj.objid);
+		PERFORM public.cstore_clean_table_resources(v_obj.objid);
 
 	END LOOP;
 END;
 $csdt$;
-
-CREATE EVENT TRIGGER cstore_drop_event
-	ON SQL_DROP
-	EXECUTE PROCEDURE cstore_drop_trigger();
