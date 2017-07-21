@@ -50,7 +50,7 @@
 /* CStore file signature */
 #define CSTORE_MAGIC_NUMBER "citus_cstore"
 #define CSTORE_VERSION_MAJOR 1
-#define CSTORE_VERSION_MINOR 5
+#define CSTORE_VERSION_MINOR 6
 
 /* miscellaneous defines */
 #define CSTORE_FDW_NAME "cstore_fdw"
