@@ -67,7 +67,7 @@ installation's bin/ directory path. For example:
     PATH=/usr/local/pgsql/bin/:$PATH make
     sudo PATH=/usr/local/pgsql/bin/:$PATH make install
 
-**Note.** cstore_fdw requires PostgreSQL 9.3, 9.4, 9.5 or 9.6. It doesn't
+**Note.** cstore_fdw requires PostgreSQL 9.3, 9.4, 9.5, 9.6 or 10. It doesn't
 support earlier versions of PostgreSQL.
 
 
@@ -115,13 +115,13 @@ most efficient execution plan for each query.
 commands. We also don't support single row inserts.
 
 
-Updating from earlier versions to 1.5
+Updating from earlier versions to 1.6
 ---------------------------------------
 
-To update an existing cstore_fdw installation from versions earlier than 1.5
+To update an existing cstore_fdw installation from versions earlier than 1.6
 you can take the following steps:
 
-* Download and install cstore_fdw version 1.5 using instructions from the "Building"
+* Download and install cstore_fdw version 1.6 using instructions from the "Building"
   section,
 * Restart the PostgreSQL server,
 * Run ```ALTER EXTENSION cstore_fdw UPDATE;```
@@ -284,11 +284,20 @@ the installation:
 
 Changeset
 ---------
+### Version 1.6
+* (Feature) Added support for PostgreSQL 10.
+* (Fix) Removed table files when a schema, extension or database is dropped.
+* (Fix) Removed unused code fragments.
+* (Fix) Fixed incorrect initialization of stripe buffers.
+* (Fix) Checked user access rights when executing truncate.
+* (Fix) Made copy command cancellable.
+* (Fix) Fixed namespace issue regarding drop table.
+
 ### Version 1.5.1
 * (Fix) Verify cstore_fdw server on CREATE FOREIGN TABLE command
 
 ### Version 1.5
-* (Feature) Added support for PostgresSQL 9.6.
+* (Feature) Added support for PostgreSQL 9.6.
 * (Fix) Removed table data when cstore_fdw table is indirectly dropped.
 * (Fix) Removed unused code fragments.
 * (Fix) Fixed column selection logic to return columns used in expressions.
@@ -334,7 +343,7 @@ Changeset
 Copyright
 ---------
 
-Copyright (c) 2016 Citus Data, Inc.
+Copyright (c) 2017 Citus Data, Inc.
 
 This module is free software; you can redistribute it and/or modify it under the
 Apache v2.0 License.
