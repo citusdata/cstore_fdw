@@ -11,8 +11,9 @@ OBJS = cstore.pb-c.o cstore_fdw.o cstore_writer.o cstore_reader.o \
        cstore_metadata_serialization.o cstore_compression.o
 
 EXTENSION = cstore_fdw
-DATA = cstore_fdw--1.5.sql cstore_fdw--1.4--1.5.sql cstore_fdw--1.3--1.4.sql \
-	   cstore_fdw--1.2--1.3.sql cstore_fdw--1.1--1.2.sql cstore_fdw--1.0--1.1.sql
+DATA = cstore_fdw--1.6.sql cstore_fdw--1.5--1.6.sql cstore_fdw--1.4--1.5.sql \
+	   cstore_fdw--1.3--1.4.sql cstore_fdw--1.2--1.3.sql cstore_fdw--1.1--1.2.sql \
+	   cstore_fdw--1.0--1.1.sql
 
 REGRESS = create load query analyze data_types functions block_filtering drop \
 		  insert copyto alter truncate
@@ -40,8 +41,8 @@ ifndef MAJORVERSION
     MAJORVERSION := $(basename $(VERSION))
 endif
 
-ifeq (,$(findstring $(MAJORVERSION), 9.3 9.4 9.5 9.6))
-    $(error PostgreSQL 9.3 or 9.4 or 9.5 or 9.6 is required to compile this extension)
+ifeq (,$(findstring $(MAJORVERSION), 9.3 9.4 9.5 9.6 10))
+    $(error PostgreSQL 9.3 or 9.4 or 9.5 or 9.6 or 10 is required to compile this extension)
 endif
 
 cstore.pb-c.c: cstore.proto

@@ -1,4 +1,4 @@
-/* cstore_fdw/cstore_fdw--1.5.sql */
+/* cstore_fdw/cstore_fdw--1.6.sql */
 
 -- complain if script is sourced in psql, rather than via CREATE EXTENSION
 \echo Use "CREATE EXTENSION cstore_fdw" to load this file. \quit
@@ -48,7 +48,7 @@ BEGIN
 			CONTINUE;
 		END IF;
 
-		PERFORM cstore_clean_table_resources(v_obj.objid);
+		PERFORM public.cstore_clean_table_resources(v_obj.objid);
 
 	END LOOP;
 END;
@@ -57,3 +57,4 @@ $csdt$;
 CREATE EVENT TRIGGER cstore_drop_event
     ON SQL_DROP
     EXECUTE PROCEDURE cstore_drop_trigger();
+

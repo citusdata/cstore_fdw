@@ -28,6 +28,7 @@
 #include "catalog/pg_foreign_table.h"
 #include "catalog/pg_namespace.h"
 #include "commands/copy.h"
+#include "commands/dbcommands.h"
 #include "commands/defrem.h"
 #include "commands/event_trigger.h"
 #include "commands/explain.h"
@@ -46,6 +47,7 @@
 #include "parser/parsetree.h"
 #include "parser/parse_coerce.h"
 #include "parser/parse_type.h"
+#include "storage/fd.h"
 #include "tcop/utility.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
@@ -55,15 +57,33 @@
 #include "utils/tqual.h"
 
 
+#define PREVIOUS_UTILITY (PreviousProcessUtilityHook != NULL \
+						  ? PreviousProcessUtilityHook : standard_ProcessUtility)
+#if PG_VERSION_NUM >= 100000
+#define CALL_PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo, \
+							  destReceiver, completionTag) \
+	PREVIOUS_UTILITY(plannedStatement, queryString, context, paramListInfo, \
+					 queryEnvironment, destReceiver, completionTag)
+#else
+#define CALL_PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo, \
+							  destReceiver, completionTag) \
+	PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo, destReceiver, \
+					 completionTag)
+#endif
+
 /* local functions forward declarations */
+#if PG_VERSION_NUM >= 100000
+static void CStoreProcessUtility(PlannedStmt *plannedStatement, const char *queryString,
+								 ProcessUtilityContext context,
+								 ParamListInfo paramListInfo,
+								 QueryEnvironment *queryEnvironment,
+								 DestReceiver *destReceiver, char *completionTag);
+#else
 static void CStoreProcessUtility(Node *parseTree, const char *queryString,
 								 ProcessUtilityContext context,
 								 ParamListInfo paramListInfo,
 								 DestReceiver *destReceiver, char *completionTag);
-static void CallPreviousProcessUtility(Node* parseTree, const char* queryString,
-									   ProcessUtilityContext context,
-									   ParamListInfo paramListInfo,
-									   DestReceiver* destReceiver, char* completionTag);
+#endif
 static bool CopyCStoreTableStatement(CopyStmt* copyStatement);
 static void CheckSuperuserPrivilegesForCopy(const CopyStmt* copyStatement);
 static void CStoreProcessCopyCommand(CopyStmt *copyStatement, const char *queryString,
@@ -74,7 +94,8 @@ static uint64 CopyOutCStoreTable(CopyStmt* copyStatement, const char* queryStrin
 static void CStoreProcessAlterTableCommand(AlterTableStmt *alterStatement);
 static List * DroppedCStoreFilenameList(DropStmt *dropStatement);
 static List * FindCStoreTables(List *tableList);
-static void TruncateCStoreTables(List *cstoreTableList);
+static List * OpenRelationsForTruncate(List *cstoreTableList);
+static void TruncateCStoreTables(List *cstoreRelationList);
 static void DeleteCStoreTableFiles(char *filename);
 static void InitializeCStoreTableFile(Oid relationId, Relation relation);
 static bool CStoreTable(Oid relationId);
@@ -84,6 +105,7 @@ static bool DistributedWorkerCopy(CopyStmt *copyStatement);
 static void CreateCStoreDatabaseDirectory(Oid databaseOid);
 static bool DirectoryExists(StringInfo directoryName);
 static void CreateDirectory(StringInfo directoryName);
+static void RemoveCStoreDatabaseDirectory(Oid databaseOid);
 static StringInfo OptionNamesString(Oid currentContextId);
 static CStoreFdwOptions * CStoreGetOptions(Oid foreignTableId);
 static char * CStoreGetOptionValue(Oid foreignTableId, const char *optionName);
@@ -212,6 +234,16 @@ cstore_ddl_event_end_trigger(PG_FUNCTION_ARGS)
 			Oid relationId = RangeVarGetRelid(createStatement->base.relation,
 											  AccessShareLock, false);
 			Relation relation = heap_open(relationId, AccessExclusiveLock);
+
+			/*
+			 * Make sure database directory exists before creating a table.
+			 * This is necessary when a foreign server is created inside
+			 * a template database and a new database is created out of it.
+			 * We have no chance to hook into server creation to create data
+			 * directory for it during database creation time.
+			 */
+			CreateCStoreDatabaseDirectory(MyDatabaseId);
+
 			InitializeCStoreTableFile(relationId, relation);
 			heap_close(relation, AccessExclusiveLock);
 		}
@@ -225,13 +257,28 @@ cstore_ddl_event_end_trigger(PG_FUNCTION_ARGS)
  * CStoreProcessUtility is the hook for handling utility commands. This function
  * customizes the behaviour of "COPY cstore_table" and "DROP FOREIGN TABLE
  * cstore_table" commands. For all other utility statements, the function calls
- * the previous utility hook or the standard utility command.
+ * the previous utility hook or the standard utility command via macro
+ * CALL_PREVIOUS_UTILITY.
  */
+#if PG_VERSION_NUM >= 100000
 static void
-CStoreProcessUtility(Node *parseTree, const char *queryString,
-					 ProcessUtilityContext context, ParamListInfo paramListInfo,
+CStoreProcessUtility(PlannedStmt *plannedStatement, const char *queryString,
+					 ProcessUtilityContext context,
+					 ParamListInfo paramListInfo,
+					 QueryEnvironment *queryEnvironment,
 					 DestReceiver *destReceiver, char *completionTag)
+#else
+static void
+CStoreProcessUtility(Node * parseTree, const char *queryString,
+					 ProcessUtilityContext context,
+					 ParamListInfo paramListInfo,
+					 DestReceiver *destReceiver, char *completionTag)
+#endif
 {
+#if PG_VERSION_NUM >= 100000
+	Node *parseTree = plannedStatement->utilityStmt;
+#endif
+
 	if (nodeTag(parseTree) == T_CopyStmt)
 	{
 		CopyStmt *copyStatement = (CopyStmt *) parseTree;
@@ -242,25 +289,61 @@ CStoreProcessUtility(Node *parseTree, const char *queryString,
 		}
 		else
 		{
-			CallPreviousProcessUtility(parseTree, queryString, context,
-									   paramListInfo, destReceiver, completionTag);
+			CALL_PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo,
+								  destReceiver, completionTag);
 		}
 	}
 	else if (nodeTag(parseTree) == T_DropStmt)
 	{
-		ListCell *fileListCell = NULL;
-		List *droppedTables = DroppedCStoreFilenameList((DropStmt*) parseTree);
+		DropStmt *dropStmt = (DropStmt *) parseTree;
 
-		CallPreviousProcessUtility(parseTree, queryString, context,
-								   paramListInfo, destReceiver, completionTag);
-
-		foreach(fileListCell, droppedTables)
+		if (dropStmt->removeType == OBJECT_EXTENSION)
 		{
-			char *fileName = lfirst(fileListCell);
+			bool removeCStoreDirectory = false;
+			ListCell *objectCell = NULL;
 
-			DeleteCStoreTableFiles(fileName);
+			foreach(objectCell, dropStmt->objects)
+			{
+				Node *object = (Node *) lfirst(objectCell);
+				char *objectName = NULL;
+
+#if PG_VERSION_NUM >= 100000
+				Assert(IsA(object, String));
+				objectName = strVal(object);
+#else
+				Assert(IsA(object, List));
+				objectName = strVal(linitial((List *) object));
+#endif
+
+				if (strncmp(CSTORE_FDW_NAME, objectName, NAMEDATALEN) == 0)
+				{
+					removeCStoreDirectory = true;
+				}
+			}
+
+			CALL_PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo,
+								  destReceiver, completionTag);
+
+			if (removeCStoreDirectory)
+			{
+				RemoveCStoreDatabaseDirectory(MyDatabaseId);
+			}
 		}
+		else
+		{
+			ListCell *fileListCell = NULL;
+			List *droppedTables = DroppedCStoreFilenameList((DropStmt *) parseTree);
 
+			CALL_PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo,
+								  destReceiver, completionTag);
+
+			foreach(fileListCell, droppedTables)
+			{
+				char *fileName = lfirst(fileListCell);
+
+				DeleteCStoreTableFiles(fileName);
+			}
+		}
 	}
 	else if (nodeTag(parseTree) == T_TruncateStmt)
 	{
@@ -268,49 +351,52 @@ CStoreProcessUtility(Node *parseTree, const char *queryString,
 		List *allTablesList = truncateStatement->relations;
 		List *cstoreTablesList = FindCStoreTables(allTablesList);
 		List *otherTablesList = list_difference(allTablesList, cstoreTablesList);
+		List *cstoreRelationList = OpenRelationsForTruncate(cstoreTablesList);
+		ListCell *cstoreRelationCell = NULL;
+
 		if (otherTablesList != NIL)
 		{
 			truncateStatement->relations = otherTablesList;
-			CallPreviousProcessUtility(parseTree, queryString, context, paramListInfo,
-									   destReceiver, completionTag);
+
+			CALL_PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo,
+								  destReceiver, completionTag);
 		}
 
-		TruncateCStoreTables(cstoreTablesList);
+		TruncateCStoreTables(cstoreRelationList);
+
+		foreach(cstoreRelationCell, cstoreRelationList)
+		{
+			Relation relation = (Relation) lfirst(cstoreRelationCell);
+			heap_close(relation, AccessExclusiveLock);
+		}
 	}
 	else if (nodeTag(parseTree) == T_AlterTableStmt)
 	{
 		AlterTableStmt *alterTable = (AlterTableStmt *) parseTree;
 		CStoreProcessAlterTableCommand(alterTable);
-		CallPreviousProcessUtility(parseTree, queryString, context,
-								   paramListInfo, destReceiver, completionTag);
+		CALL_PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo,
+							  destReceiver, completionTag);
+	}
+	else if (nodeTag(parseTree) == T_DropdbStmt)
+	{
+		DropdbStmt *dropDdStmt = (DropdbStmt *) parseTree;
+		bool missingOk = true;
+		Oid databaseOid = get_database_oid(dropDdStmt->dbname, missingOk);
+
+		/* let postgres handle error checking and dropping of the database */
+		CALL_PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo,
+							  destReceiver, completionTag);
+
+		if (databaseOid != InvalidOid)
+		{
+			RemoveCStoreDatabaseDirectory(databaseOid);
+		}
 	}
 	/* handle other utility statements */
 	else
 	{
-		CallPreviousProcessUtility(parseTree, queryString, context,
-								   paramListInfo, destReceiver, completionTag);
-	}
-}
-
-
-/*
- * CallPreviousProcessUtility calls the previously registered utility hook. If no
- * utility hook is registered, it calls the standard process utility handler.
- */
-static void
-CallPreviousProcessUtility(Node* parseTree, const char* queryString,
-						   ProcessUtilityContext context, ParamListInfo paramListInfo,
-						   DestReceiver* destReceiver, char* completionTag)
-{
-	if (PreviousProcessUtilityHook != NULL)
-	{
-		PreviousProcessUtilityHook(parseTree, queryString, context,
-								   paramListInfo, destReceiver, completionTag);
-	}
-	else
-	{
-		standard_ProcessUtility(parseTree, queryString, context, paramListInfo,
-								destReceiver, completionTag);
+		CALL_PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo,
+							  destReceiver, completionTag);
 	}
 }
 
@@ -466,10 +552,24 @@ CopyIntoCStoreTable(const CopyStmt *copyStatement, const char *queryString)
 										 ALLOCSET_DEFAULT_MAXSIZE);
 
 	/* init state to read from COPY data source */
+#if (PG_VERSION_NUM >= 100000)
+	{
+		ParseState *pstate = make_parsestate(NULL);
+		pstate->p_sourcetext = queryString;
+
+		copyState = BeginCopyFrom(pstate, relation, copyStatement->filename,
+								  copyStatement->is_program,
+								  NULL,
+								  copyStatement->attlist,
+								  copyStatement->options);
+		free_parsestate(pstate);
+	}
+#else
 	copyState = BeginCopyFrom(relation, copyStatement->filename,
 							  copyStatement->is_program,
 							  copyStatement->attlist,
 							  copyStatement->options);
+#endif
 
 	/* init state to write to the cstore file */
 	writeState = CStoreBeginWrite(cstoreFdwOptions->filename,
@@ -493,6 +593,8 @@ CopyIntoCStoreTable(const CopyStmt *copyStatement, const char *queryString)
 		}
 
 		MemoryContextReset(tupleContext);
+
+		CHECK_FOR_INTERRUPTS();
 	}
 
 	/* end read/write sessions and close the relation */
@@ -517,6 +619,7 @@ CopyOutCStoreTable(CopyStmt* copyStatement, const char* queryString)
 	RangeVar *relation = NULL;
 	char *qualifiedName = NULL;
 	List *queryList = NIL;
+	Node *rawQuery = NULL;
 
 	StringInfo newQuerySubstring = makeStringInfo();
 
@@ -535,14 +638,34 @@ CopyOutCStoreTable(CopyStmt* copyStatement, const char* queryString)
 	queryList = raw_parser(newQuerySubstring->data);
 
 	/* take the first parse tree */
-	copyStatement->query = linitial(queryList);
+	rawQuery = linitial(queryList);
 
 	/*
 	 * Set the relation field to NULL so that COPY command works on
 	 * query field instead.
 	 */
 	copyStatement->relation = NULL;
+
+#if (PG_VERSION_NUM >= 100000)
+	/*
+	 * raw_parser returns list of RawStmt* in PG 10+ we need to
+	 * extract actual query from it.
+	 */
+	{
+		ParseState *pstate = make_parsestate(NULL);
+		RawStmt *rawStatement = (RawStmt *) rawQuery;
+
+		pstate->p_sourcetext = newQuerySubstring->data;
+		copyStatement->query = rawStatement->stmt;
+
+		DoCopy(pstate, copyStatement, -1, -1, &processedCount);
+		free_parsestate(pstate);
+	}
+#else
+	copyStatement->query = rawQuery;
+
 	DoCopy(copyStatement, queryString, &processedCount);
+#endif
 
 	return processedCount;
 }
@@ -583,7 +706,7 @@ CStoreProcessAlterTableCommand(AlterTableStmt *alterStatement)
 		{
 			char *columnName = alterCommand->name;
 			ColumnDef *columnDef = (ColumnDef *) alterCommand->def;
-			Oid targetTypeId = typenameTypeId(NULL, columnDef->typeName);;
+			Oid targetTypeId = typenameTypeId(NULL, columnDef->typeName);
 			char *typeName = TypeNameToString(columnDef->typeName);
 			AttrNumber attributeNumber = get_attnum(relationId, columnName);
 			Oid currentTypeId = InvalidOid;
@@ -673,24 +796,62 @@ FindCStoreTables(List *tableList)
 }
 
 
-/* TruncateCStoreTable truncates given cstore tables */
-static void
-TruncateCStoreTables(List *cstoreTableList)
+/* 
+ * OpenRelationsForTruncate opens and locks relations for tables to be truncated.
+ *
+ * It also performs a permission checks to see if the user has truncate privilege
+ * on tables.
+ */
+static List *
+OpenRelationsForTruncate(List *cstoreTableList)
 {
 	ListCell *relationCell = NULL;
+	List *relationIdList = NIL;
+	List *relationList = NIL;
 	foreach(relationCell, cstoreTableList)
 	{
 		RangeVar *rangeVar = (RangeVar *) lfirst(relationCell);
-		Oid relationId = RangeVarGetRelid(rangeVar, AccessShareLock, true);
-		Relation relation = NULL;
+		Relation relation = heap_openrv(rangeVar, AccessExclusiveLock);
+		Oid relationId = relation->rd_id;
+		AclResult aclresult = pg_class_aclcheck(relationId, GetUserId(),
+											   ACL_TRUNCATE);
+		if (aclresult != ACLCHECK_OK)
+		{
+			aclcheck_error(aclresult, ACL_KIND_CLASS, get_rel_name(relationId));
+		}
+
+		/* check if this relation is repeated */
+		if (list_member_oid(relationIdList, relationId))
+		{
+			heap_close(relation, AccessExclusiveLock);
+		}
+		else
+		{
+			relationIdList = lappend_oid(relationIdList, relationId);
+			relationList = lappend(relationList, relation);
+		}
+	}
+
+	return relationList;
+}
+
+
+/* TruncateCStoreTable truncates given cstore tables */
+static void
+TruncateCStoreTables(List *cstoreRelationList)
+{
+	ListCell *relationCell = NULL;
+	foreach(relationCell, cstoreRelationList)
+	{
+		Relation relation = (Relation) lfirst(relationCell);
+		Oid relationId = relation->rd_id;
 		CStoreFdwOptions *cstoreFdwOptions = NULL;
 
 		Assert(CStoreTable(relationId));
-		relation = heap_open(relationId, AccessExclusiveLock);
+
 		cstoreFdwOptions = CStoreGetOptions(relationId);
 		DeleteCStoreTableFiles(cstoreFdwOptions->filename);
 		InitializeCStoreTableFile(relationId, relation);
-		heap_close(relation, AccessExclusiveLock);
 	}
 }
 
@@ -749,6 +910,7 @@ static void InitializeCStoreTableFile(Oid relationId, Relation relation)
 			cstoreFdwOptions->blockRowCount, tupleDescriptor);
 	CStoreEndWrite(writeState);
 }
+
 
 
 /*
@@ -951,6 +1113,27 @@ CreateDirectory(StringInfo directoryName)
 						errmsg("could not create directory \"%s\": %m",
 							   directoryName->data)));
 	}
+}
+
+
+/*
+ * RemoveCStoreDatabaseDirectory removes CStore directory previously
+ * created for this database. 
+ * However it does not remove 'cstore_fdw' directory even if there
+ * are no other databases left.
+ */
+static void
+RemoveCStoreDatabaseDirectory(Oid databaseOid)
+{
+	StringInfo cstoreDirectoryPath = makeStringInfo();
+	StringInfo cstoreDatabaseDirectoryPath = makeStringInfo();
+
+	appendStringInfo(cstoreDirectoryPath, "%s/%s", DataDir, CSTORE_FDW_NAME);
+
+	appendStringInfo(cstoreDatabaseDirectoryPath, "%s/%s/%u", DataDir,
+					 CSTORE_FDW_NAME, databaseOid);
+
+	rmtree(cstoreDatabaseDirectoryPath->data, true);
 }
 
 
