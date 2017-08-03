@@ -1133,7 +1133,10 @@ RemoveCStoreDatabaseDirectory(Oid databaseOid)
 	appendStringInfo(cstoreDatabaseDirectoryPath, "%s/%s/%u", DataDir,
 					 CSTORE_FDW_NAME, databaseOid);
 
-	rmtree(cstoreDatabaseDirectoryPath->data, true);
+	if (DirectoryExists(cstoreDatabaseDirectoryPath))
+	{
+		rmtree(cstoreDatabaseDirectoryPath->data, true);
+	}
 }
 
 
