@@ -1,6 +1,6 @@
 ga_tracking_id: UA-32858865-2
 markdown: kramdown
-highlighter: rogue
+highlighter: rouge
 redcarpet:
   input: GFM
   extensions:
