@@ -2,8 +2,8 @@
 title: cstore_fdw
 tagline: Fast columnar store for analytics with PostgreSQL
 layout: default
-zip_url: https://github.com/citusdata/cstore_fdw/archive/v1.5.0.zip
-tar_url: https://github.com/citusdata/cstore_fdw/archive/v1.5.0.tar.gz
+zip_url: https://github.com/citusdata/cstore_fdw/archive/v1.6.0.zip
+tar_url: https://github.com/citusdata/cstore_fdw/archive/v1.6.0.tar.gz
 ---
 
 Introducing `cstore_fdw`, the first [column-oriented][] store available for PostgreSQL. Using it will let you:
