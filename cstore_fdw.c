@@ -25,6 +25,7 @@
 #include "access/reloptions.h"
 #include "access/sysattr.h"
 #include "access/tuptoaster.h"
+#include "catalog/pg_attribute.h"
 #include "catalog/indexing.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_foreign_table.h"
@@ -900,12 +901,13 @@ CStoreTableList(void)
 static void
 RemoveRelationStorage(Oid relationId, Oid fileNodeOid)
 {
-	RelFileNode relFileNode = { MyDatabaseTableSpace, MyDatabaseId, fileNodeOid };
-	Relation relation = palloc0(sizeof(RelationData));
-	relation->rd_node = relFileNode;
-	relation->rd_backend = InvalidBackendId;
+	elog(WARNING, "Skipping RelationDropStorage ...");
+	// RelFileNode relFileNode = { MyDatabaseTableSpace, MyDatabaseId, fileNodeOid };
+	// Relation relation = palloc0(sizeof(RelationData));
+	// relation->rd_node = relFileNode;
+	// relation->rd_backend = InvalidBackendId;
 
-	RelationDropStorage(relation);
+	// RelationDropStorage(relation);
 }
 
 
@@ -1745,7 +1747,7 @@ ColumnList(RelOptInfo *baserel, Oid foreignTableId)
 	const AttrNumber wholeRow = 0;
 	Relation relation = heap_open(foreignTableId, AccessShareLock);
 	TupleDesc tupleDescriptor = RelationGetDescr(relation);
-	Form_pg_attribute *attributeFormArray = tupleDescriptor->attrs;
+	FormData_pg_attribute *attributeFormArray = tupleDescriptor->attrs;
 
 	/* first add the columns used in joins and projections */
 	foreach(targetColumnCell, targetColumnList)
@@ -1804,7 +1806,7 @@ ColumnList(RelOptInfo *baserel, Oid foreignTableId)
 			}
 			else if (neededColumn->varattno == wholeRow)
 			{
-				Form_pg_attribute attributeForm = attributeFormArray[columnIndex - 1];
+				Form_pg_attribute attributeForm = &attributeFormArray[columnIndex - 1];
 				Index tableId = neededColumn->varno;
 
 				column = makeVar(tableId, columnIndex, attributeForm->atttypid,
@@ -1982,13 +1984,13 @@ CStoreAcquireSampleRows(Relation relation, int logLevel,
 
 	TupleDesc tupleDescriptor = RelationGetDescr(relation);
 	uint32 columnCount = tupleDescriptor->natts;
-	Form_pg_attribute *attributeFormArray = tupleDescriptor->attrs;
+	FormData_pg_attribute *attributeFormArray = tupleDescriptor->attrs;
 
 	/* create list of columns of the relation */
 	uint32 columnIndex = 0;
 	for (columnIndex = 0; columnIndex < columnCount; columnIndex++)
 	{
-		Form_pg_attribute attributeForm = attributeFormArray[columnIndex];
+		Form_pg_attribute attributeForm = &attributeFormArray[columnIndex];
 		const Index tableId = 1;
 
 		if (!attributeForm->attisdropped)

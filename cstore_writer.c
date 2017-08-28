@@ -130,7 +130,7 @@ CStoreBeginWrite(Relation relation, CompressionType compressionType,
 	for (columnIndex = 0; columnIndex < columnCount; columnIndex++)
 	{
 		FmgrInfo *comparisonFunction = NULL;
-		FormData_pg_attribute *attributeForm = tupleDescriptor->attrs[columnIndex];
+		FormData_pg_attribute *attributeForm = &tupleDescriptor->attrs[columnIndex];
 
 		if (!attributeForm->attisdropped)
 		{
@@ -267,7 +267,7 @@ CStoreWriteRow(TableWriteState *writeState, Datum *columnValues, bool *columnNul
 			FmgrInfo *comparisonFunction =
 				writeState->comparisonFunctionArray[columnIndex];
 			Form_pg_attribute attributeForm =
-				writeState->tupleDescriptor->attrs[columnIndex];
+				&writeState->tupleDescriptor->attrs[columnIndex];
 			bool columnTypeByValue = attributeForm->attbyval;
 			int columnTypeLength = attributeForm->attlen;
 			Oid columnCollation = attributeForm->attcollation;
@@ -773,7 +773,7 @@ CreateSkipListBufferArray(StripeSkipList *stripeSkipList, TupleDesc tupleDescrip
 		StringInfo skipListBuffer = NULL;
 		ColumnBlockSkipNode *blockSkipNodeArray =
 			stripeSkipList->blockSkipNodeArray[columnIndex];
-		Form_pg_attribute attributeForm = tupleDescriptor->attrs[columnIndex];
+		Form_pg_attribute attributeForm = &tupleDescriptor->attrs[columnIndex];
 
 		skipListBuffer = SerializeColumnSkipList(blockSkipNodeArray,
 												 stripeSkipList->blockCount,
