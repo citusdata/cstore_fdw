@@ -24,15 +24,16 @@
 
 
 /* Defines for valid option names */
-#define OPTION_NAME_FILENAME "filename"
 #define OPTION_NAME_COMPRESSION_TYPE "compression"
 #define OPTION_NAME_STRIPE_ROW_COUNT "stripe_row_count"
 #define OPTION_NAME_BLOCK_ROW_COUNT "block_row_count"
+#define OPTION_NAME_LOGGING "logging"
 
 /* Default values for option parameters */
 #define DEFAULT_COMPRESSION_TYPE COMPRESSION_NONE
 #define DEFAULT_STRIPE_ROW_COUNT 150000
 #define DEFAULT_BLOCK_ROW_COUNT 10000
+#define DEFAULT_LOGGING_TYPE true
 
 /* Limits for option parameters */
 #define STRIPE_ROW_COUNT_MINIMUM 1000
@@ -45,10 +46,13 @@
 #define COMPRESSION_STRING_PG_LZ "pglz"
 #define COMPRESSION_STRING_DELIMITED_LIST "none, pglz"
 
+/* Values for logging parameter */
+#define LOGGING_STRING_DELIMITED_LIST "true, false"
+
 /* CStore file signature */
 #define CSTORE_MAGIC_NUMBER "citus_cstore"
-#define CSTORE_VERSION_MAJOR 1
-#define CSTORE_VERSION_MINOR 6
+#define CSTORE_VERSION_MAJOR 2
+#define CSTORE_VERSION_MINOR 0
 
 /* miscellaneous defines */
 #define CSTORE_FDW_NAME "cstore_fdw"
@@ -61,12 +65,17 @@
 /* table containing information about how to partition distributed tables */
 #define CITUS_EXTENSION_NAME "citus"
 #define CITUS_PARTITION_TABLE_NAME "pg_dist_partition"
+#define CSTORE_TABLES_NAME "pg_cstore_tables"
 
 /* human-readable names for addressing columns of the pg_dist_partition table */
 #define ATTR_NUM_PARTITION_RELATION_ID 1
 #define ATTR_NUM_PARTITION_TYPE 2
 #define ATTR_NUM_PARTITION_KEY 3
 
+#define FOOTER_FORKNUM FSM_FORKNUM
+#define DATA_FORKNUM MAIN_FORKNUM
+
+#define CSTORE_PAGE_DATA_SIZE (BLCKSZ - SizeOfPageHeaderData)
 
 /*
  * CStoreValidOption keeps an option name and a context. When an option is passed
@@ -86,10 +95,10 @@ static const uint32 ValidOptionCount = 4;
 static const CStoreValidOption ValidOptionArray[] =
 {
 	/* foreign table options */
-	{ OPTION_NAME_FILENAME, ForeignTableRelationId },
 	{ OPTION_NAME_COMPRESSION_TYPE, ForeignTableRelationId },
 	{ OPTION_NAME_STRIPE_ROW_COUNT, ForeignTableRelationId },
-	{ OPTION_NAME_BLOCK_ROW_COUNT, ForeignTableRelationId }
+	{ OPTION_NAME_BLOCK_ROW_COUNT, ForeignTableRelationId },
+	{ OPTION_NAME_LOGGING, ForeignTableRelationId }
 };
 
 
@@ -112,10 +121,10 @@ typedef enum
  */
 typedef struct CStoreFdwOptions
 {
-	char *filename;
 	CompressionType compressionType;
 	uint64 stripeRowCount;
 	uint32 blockRowCount;
+	bool logging;
 
 } CStoreFdwOptions;
 
@@ -254,7 +263,6 @@ typedef struct StripeFooter
 /* TableReadState represents state of a cstore file read operation. */
 typedef struct TableReadState
 {
-	FILE *tableFile;
 	TableFooter *tableFooter;
 	TupleDesc tupleDescriptor;
 
@@ -272,6 +280,7 @@ typedef struct TableReadState
 	uint64 stripeReadRowCount;
 	ColumnBlockData **blockDataArray;
 	int32 deserializedBlockIndex;
+	Relation relation;
 
 } TableReadState;
 
@@ -279,14 +288,15 @@ typedef struct TableReadState
 /* TableWriteState represents state of a cstore file write operation. */
 typedef struct TableWriteState
 {
-	FILE *tableFile;
 	TableFooter *tableFooter;
-	StringInfo tableFooterFilename;
 	CompressionType compressionType;
+	bool logging;
 	TupleDesc tupleDescriptor;
 	FmgrInfo **comparisonFunctionArray;
 	uint64 currentFileOffset;
 	Relation relation;
+	BlockNumber activeBlockNumber;
+
 
 	MemoryContext stripeWriteContext;
 	StripeBuffers *stripeBuffers;
@@ -318,19 +328,20 @@ extern Datum cstore_fdw_handler(PG_FUNCTION_ARGS);
 extern Datum cstore_fdw_validator(PG_FUNCTION_ARGS);
 
 /* Function declarations for writing to a cstore file */
-extern TableWriteState * CStoreBeginWrite(const char *filename,
+extern TableWriteState * CStoreBeginWrite(Relation relation,
 										  CompressionType compressionType,
 										  uint64 stripeMaxRowCount,
 										  uint32 blockRowCount,
+										  bool logging,
 										  TupleDesc tupleDescriptor);
 extern void CStoreWriteRow(TableWriteState *state, Datum *columnValues,
 						   bool *columnNulls);
 extern void CStoreEndWrite(TableWriteState * state);
 
 /* Function declarations for reading from a cstore file */
-extern TableReadState * CStoreBeginRead(const char *filename, TupleDesc tupleDescriptor,
+extern TableReadState * CStoreBeginRead(Relation relation, TupleDesc tupleDescriptor,
 										List *projectedColumnList, List *qualConditions);
-extern TableFooter * CStoreReadFooter(StringInfo tableFooterFilename);
+extern TableFooter * CStoreReadFooter(Relation relation);
 extern bool CStoreReadFinished(TableReadState *state);
 extern bool CStoreReadNextRow(TableReadState *state, Datum *columnValues,
 							  bool *columnNulls);
@@ -343,7 +354,7 @@ extern ColumnBlockData ** CreateEmptyBlockDataArray(uint32 columnCount, bool *co
 													uint32 blockRowCount);
 extern void FreeColumnBlockDataArray(ColumnBlockData **blockDataArray,
 									 uint32 columnCount);
-extern uint64 CStoreTableRowCount(const char *filename);
+extern uint64 CStoreTableRowCount(Relation relation);
 extern bool CompressBuffer(StringInfo inputBuffer, StringInfo outputBuffer,
 						   CompressionType compressionType);
 extern StringInfo DecompressBuffer(StringInfo buffer, CompressionType compressionType);
