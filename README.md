@@ -4,9 +4,9 @@ cstore_fdw
 [![Build Status](https://travis-ci.org/citusdata/cstore_fdw.svg?branch=master)][status]
 [![Coverage](http://img.shields.io/coveralls/citusdata/cstore_fdw/master.svg)][coverage]
 
-Cstore is a columnar store extension for PostgreSQL. Columnar stores provide notable benefits for analytic use-cases where data is loaded in batches.
+Cstore is a columnar store extension for PostgreSQL. Columnar stores provide notable benefits for analytic use cases where data is loaded in batches.
 
-Cstore was created and is maintained by [Citus Data](https://www.citusdata.com). At Citus, our mission is to make it so you never have to worry about scaling again. We do this by allowing you to seamlessly scale out your Postgres database. The Citus extension is available as open source, an enterprise version, and a fully managed database as a service. If you have any questions about how Citus can help you scale please [let us know](https://www.citusdata.com/about/contact_us/).
+Cstore was created and is maintained by [Citus Data](https://www.citusdata.com). At Citus Data, our mission is to make it so you never have to worry about scaling your database again. So we built an extension to Postgres that intelligently distributes your data and queries across many nodes so your database can scale and your queries are fast. The Citus extension to Postgres is available as open source, as on-prem enterprise software, and as a fully-managed database as a service. If you have any questions about how Citus can help you scale please [let us know](https://www.citusdata.com/about/contact_us/).
 
 Join the [Mailing List][mailing-list] to stay on top of the latest developments for Cstore.
 
