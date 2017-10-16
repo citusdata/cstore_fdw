@@ -6,7 +6,7 @@ cstore_fdw
 
 Cstore_fdw is an open source columnar store extension for PostgreSQL. Columnar stores provide notable benefits for analytics use cases where data is loaded in batches. Cstore_fdw’s columnar nature delivers performance by only reading relevant data from disk, and it may compress data 6x-10x to reduce space requirements for data archival.
 
-Cstore was created and is maintained by [Citus Data](https://www.citusdata.com). At Citus Data, our mission is to make it so you never have to worry about scaling your database again. So we built the Citus extension to Postgres, an extension that intelligently distributes your data and queries across many nodes so your database can scale and your queries are fast. The Citus extension to Postgres is available as open source, as on-prem enterprise software, and as a [fully-managed database as a service](https://www.citusdata.com/product/cloud). If you have any questions about how Citus can help you scale, [please let us know](https://www.citusdata.com/about/contact_us/).
+Cstore_fdw is developed by [Citus Data](https://www.citusdata.com) and can be used in combination with [Citus](https://github.com/citusdata/citus), a postgres extension that intelligently distributes your data and queries across many nodes so your database can scale and your queries are fast. If you have any questions about how Citus can help you scale or how to use Citus in combination with cstore_fdw, [please let us know](https://www.citusdata.com/about/contact_us/).
 
 Join the [Mailing List][mailing-list] to stay on top of the latest developments for Cstore_fdw.
 
