@@ -62,7 +62,7 @@
 #if PG_VERSION_NUM >= 100000
 #define CALL_PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo, \
 							  destReceiver, completionTag) \
-	PREVIOUS_UTILITY(plannedStatement, queryString, context, paramListInfo, \
+	PREVIOUS_UTILITY(localPlannedStatement, queryString, context, paramListInfo, \
 					 queryEnvironment, destReceiver, completionTag)
 #else
 #define CALL_PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo, \
@@ -276,7 +276,10 @@ CStoreProcessUtility(Node * parseTree, const char *queryString,
 #endif
 {
 #if PG_VERSION_NUM >= 100000
-	Node *parseTree = plannedStatement->utilityStmt;
+	/* truncate processing needs to modify the parseTree of the
+	 * planned Statement, therefore we need to work on a copy */
+	PlannedStmt *localPlannedStatement = copyObjectImpl(plannedStatement);
+	Node *parseTree = localPlannedStatement->utilityStmt;
 #endif
 
 	if (nodeTag(parseTree) == T_CopyStmt)
@@ -347,7 +350,12 @@ CStoreProcessUtility(Node * parseTree, const char *queryString,
 	}
 	else if (nodeTag(parseTree) == T_TruncateStmt)
 	{
-		TruncateStmt *truncateStatement = (TruncateStmt *) parseTree;
+#if PG_VERSION_NUM >= 100000
+		TruncateStmt *truncateStatement =  (TruncateStmt *) parseTree;
+#else
+		/* we are modifying the parseTree, therefore we will work on a copy */
+		TruncateStmt *truncateStatement =  (TruncateStmt *) copyObject(parseTree);
+#endif
 		List *allTablesList = truncateStatement->relations;
 		List *cstoreTablesList = FindCStoreTables(allTablesList);
 		List *otherTablesList = list_difference(allTablesList, cstoreTablesList);
@@ -358,7 +366,7 @@ CStoreProcessUtility(Node * parseTree, const char *queryString,
 		{
 			truncateStatement->relations = otherTablesList;
 
-			CALL_PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo,
+			CALL_PREVIOUS_UTILITY((Node *) truncateStatement, queryString, context, paramListInfo,
 								  destReceiver, completionTag);
                         /* restore the former relation list. Our
                          * replacement could be freed but still needed
