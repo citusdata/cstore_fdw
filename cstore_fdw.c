@@ -368,11 +368,6 @@ CStoreProcessUtility(Node * parseTree, const char *queryString,
 
 			CALL_PREVIOUS_UTILITY((Node *) truncateStatement, queryString, context, paramListInfo,
 								  destReceiver, completionTag);
-                        /* restore the former relation list. Our
-                         * replacement could be freed but still needed
-                         * in a cached plan. A truncate can be cached
-                         * if run from a pl/pgSQL function */
-                        truncateStatement->relations = allTablesList;
 		}
 
 		TruncateCStoreTables(cstoreRelationList);
