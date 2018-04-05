@@ -77,6 +77,19 @@ SELECT * from cstore_truncate_test_compressed;
 TRUNCATE TABLE cstore_truncate_test;
 SELECT * from cstore_truncate_test;
 
+-- test if a cached truncate from a pl/pgsql function works
+CREATE FUNCTION cstore_truncate_test_regular_func() RETURNS void AS $$
+BEGIN
+	INSERT INTO cstore_truncate_test_regular select a, a from generate_series(1, 10) a;
+	TRUNCATE TABLE cstore_truncate_test_regular;
+END;$$
+LANGUAGE plpgsql;
+
+SELECT cstore_truncate_test_regular_func();
+-- the cached plans are used stating from the second call
+SELECT cstore_truncate_test_regular_func();
+DROP FUNCTION cstore_truncate_test_regular_func();
+
 DROP FOREIGN TABLE cstore_truncate_test, cstore_truncate_test_second, cstore_truncate_test_compressed;
 DROP TABLE cstore_truncate_test_regular;
 
