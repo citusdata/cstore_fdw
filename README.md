@@ -52,8 +52,7 @@ So we need to install these packages first:
     brew install protobuf-c
 
 **Note.** In CentOS 5, 6, and 7, you may need to install or update EPEL 5, 6, or 7 repositories.
- See [this page]
-(https://support.rackspace.com/how-to/install-epel-and-additional-repositories-on-centos-and-red-hat/)
+ See [this page](https://support.rackspace.com/how-to/install-epel-and-additional-repositories-on-centos-and-red-hat/)
 for instructions.
 
 **Note.** In Amazon Linux, the EPEL repository is installed by default, but not
