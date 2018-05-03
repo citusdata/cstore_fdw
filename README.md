@@ -285,6 +285,9 @@ the installation:
 
 Changeset
 ---------
+### Version 1.6.1
+* (Fix) Fix crash during truncate (Cstore crashing server when enabled, not used)
+* (Fix) No such file or directory warning when attempting to drop database
 ### Version 1.6
 * (Feature) Added support for PostgreSQL 10.
 * (Fix) Removed table files when a schema, extension or database is dropped.
