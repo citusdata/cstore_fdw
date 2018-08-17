@@ -748,7 +748,11 @@ SelectedBlockMask(StripeSkipList *stripeSkipList, List *projectedColumnList,
 	ListCell *columnCell = NULL;
 	uint32 blockIndex = 0;
 	List *restrictInfoList = BuildRestrictInfoList(whereClauseList);
+	#if PG_VERSION_NUM >=90400
 	List *whereClauseVars = pull_var_clause((Node *)whereClauseList,0);
+	#else
+	List *whereClauseVars = pull_var_clause((Node *)whereClauseList,PVC_REJECT_AGGREGATES,PVC_REJECT_PLACEHOLDERS);
+	#endif
 	selectedBlockMask = palloc0(stripeSkipList->blockCount * sizeof(bool));
 	memset(selectedBlockMask, true, stripeSkipList->blockCount * sizeof(bool));
 
