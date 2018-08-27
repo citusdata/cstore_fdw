@@ -17,6 +17,7 @@
 #include "postgres.h"
 #include "cstore_fdw.h"
 #include "cstore_metadata_serialization.h"
+#include "cstore_version_compat.h"
 
 #include <sys/stat.h>
 #include "access/nbtree.h"
@@ -149,7 +150,7 @@ CStoreBeginWrite(const char *filename, CompressionType compressionType,
 	for (columnIndex = 0; columnIndex < columnCount; columnIndex++)
 	{
 		FmgrInfo *comparisonFunction = NULL;
-		FormData_pg_attribute *attributeForm = tupleDescriptor->attrs[columnIndex];
+		FormData_pg_attribute *attributeForm = TupleDescAttr(tupleDescriptor, columnIndex);
 
 		if (!attributeForm->attisdropped)
 		{
@@ -168,9 +169,7 @@ CStoreBeginWrite(const char *filename, CompressionType compressionType,
 	 */
 	stripeWriteContext = AllocSetContextCreate(CurrentMemoryContext,
 											   "Stripe Write Memory Context",
-											   ALLOCSET_DEFAULT_MINSIZE,
-											   ALLOCSET_DEFAULT_INITSIZE,
-											   ALLOCSET_DEFAULT_MAXSIZE);
+											   ALLOCSET_DEFAULT_SIZES);
 
 	columnMaskArray = palloc(columnCount * sizeof(bool));
 	memset(columnMaskArray, true, columnCount);
@@ -258,7 +257,7 @@ CStoreWriteRow(TableWriteState *writeState, Datum *columnValues, bool *columnNul
 			FmgrInfo *comparisonFunction =
 				writeState->comparisonFunctionArray[columnIndex];
 			Form_pg_attribute attributeForm =
-				writeState->tupleDescriptor->attrs[columnIndex];
+				TupleDescAttr(writeState->tupleDescriptor, columnIndex);
 			bool columnTypeByValue = attributeForm->attbyval;
 			int columnTypeLength = attributeForm->attlen;
 			Oid columnCollation = attributeForm->attcollation;
@@ -640,7 +639,7 @@ CreateSkipListBufferArray(StripeSkipList *stripeSkipList, TupleDesc tupleDescrip
 		StringInfo skipListBuffer = NULL;
 		ColumnBlockSkipNode *blockSkipNodeArray =
 			stripeSkipList->blockSkipNodeArray[columnIndex];
-		Form_pg_attribute attributeForm = tupleDescriptor->attrs[columnIndex];
+		Form_pg_attribute attributeForm = TupleDescAttr(tupleDescriptor, columnIndex);
 
 		skipListBuffer = SerializeColumnSkipList(blockSkipNodeArray,
 												 stripeSkipList->blockCount,

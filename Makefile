@@ -41,8 +41,8 @@ ifndef MAJORVERSION
     MAJORVERSION := $(basename $(VERSION))
 endif
 
-ifeq (,$(findstring $(MAJORVERSION), 9.3 9.4 9.5 9.6 10))
-    $(error PostgreSQL 9.3 or 9.4 or 9.5 or 9.6 or 10 is required to compile this extension)
+ifeq (,$(findstring $(MAJORVERSION), 9.3 9.4 9.5 9.6 10 11))
+    $(error PostgreSQL 9.3 or 9.4 or 9.5 or 9.6 or 10 or 11 is required to compile this extension)
 endif
 
 cstore.pb-c.c: cstore.proto
