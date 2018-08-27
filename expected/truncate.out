@@ -1,6 +1,14 @@
 --
 -- Test the TRUNCATE TABLE command for cstore_fdw tables.
 --
+-- print whether we're using version > 10 to make version-specific tests clear
+SHOW server_version \gset
+SELECT substring(:'server_version', '\d+')::int > 10 AS version_above_ten;
+ version_above_ten 
+-------------------
+ t
+(1 row)
+
 -- Check that files for the automatically managed table exist in the
 -- cstore_fdw/{databaseoid} directory.
 SELECT count(*) FROM (
@@ -212,7 +220,7 @@ SELECT count(*) FROM truncate_schema.truncate_tbl;
 (1 row)
 
 TRUNCATE TABLE truncate_schema.truncate_tbl;
-ERROR:  permission denied for relation truncate_tbl
+ERROR:  permission denied for table truncate_tbl
 SELECT count(*) FROM truncate_schema.truncate_tbl;
  count 
 -------
