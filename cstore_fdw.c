@@ -1892,7 +1892,7 @@ CStoreBeginForeignScan(ForeignScanState *scanState, int executorFlags)
 	Oid foreignTableId = InvalidOid;
 	CStoreFdwOptions *cstoreFdwOptions = NULL;
 	Relation currentRelation = scanState->ss.ss_currentRelation;
-	TupleDesc tupleDescriptor = currentRelation->rd_att;
+	TupleDesc tupleDescriptor = RelationGetDescr(currentRelation);
 	List *columnList = NIL;
 	ForeignScan *foreignScan = NULL;
 	List *foreignPrivateList = NIL;
