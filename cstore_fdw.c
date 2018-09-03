@@ -16,6 +16,7 @@
 
 #include "postgres.h"
 #include "cstore_fdw.h"
+#include "cstore_version_compat.h"
 
 #include <sys/stat.h>
 #include <unistd.h>
@@ -56,20 +57,6 @@
 #include "utils/rel.h"
 #include "utils/tqual.h"
 
-
-#define PREVIOUS_UTILITY (PreviousProcessUtilityHook != NULL \
-						  ? PreviousProcessUtilityHook : standard_ProcessUtility)
-#if PG_VERSION_NUM >= 100000
-#define CALL_PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo, \
-							  destReceiver, completionTag) \
-	PREVIOUS_UTILITY(plannedStatement, queryString, context, paramListInfo, \
-					 queryEnvironment, destReceiver, completionTag)
-#else
-#define CALL_PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo, \
-							  destReceiver, completionTag) \
-	PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo, destReceiver, \
-					 completionTag)
-#endif
 
 /* local functions forward declarations */
 #if PG_VERSION_NUM >= 100000
@@ -552,9 +539,7 @@ CopyIntoCStoreTable(const CopyStmt *copyStatement, const char *queryString)
 	 */
 	tupleContext = AllocSetContextCreate(CurrentMemoryContext,
 										 "CStore COPY Row Memory Context",
-										 ALLOCSET_DEFAULT_MINSIZE,
-										 ALLOCSET_DEFAULT_INITSIZE,
-										 ALLOCSET_DEFAULT_MAXSIZE);
+										 ALLOCSET_DEFAULT_SIZES);
 
 	/* init state to read from COPY data source */
 #if (PG_VERSION_NUM >= 100000)
@@ -822,7 +807,7 @@ OpenRelationsForTruncate(List *cstoreTableList)
 											   ACL_TRUNCATE);
 		if (aclresult != ACLCHECK_OK)
 		{
-			aclcheck_error(aclresult, ACL_KIND_CLASS, get_rel_name(relationId));
+			aclcheck_error(aclresult, ACLCHECK_OBJECT_TABLE, get_rel_name(relationId));
 		}
 
 		/* check if this relation is repeated */
@@ -1795,7 +1780,6 @@ ColumnList(RelOptInfo *baserel, Oid foreignTableId)
 	const AttrNumber wholeRow = 0;
 	Relation relation = heap_open(foreignTableId, AccessShareLock);
 	TupleDesc tupleDescriptor = RelationGetDescr(relation);
-	Form_pg_attribute *attributeFormArray = tupleDescriptor->attrs;
 
 	/* first add the columns used in joins and projections */
 	foreach(targetColumnCell, targetColumnList)
@@ -1854,7 +1838,7 @@ ColumnList(RelOptInfo *baserel, Oid foreignTableId)
 			}
 			else if (neededColumn->varattno == wholeRow)
 			{
-				Form_pg_attribute attributeForm = attributeFormArray[columnIndex - 1];
+				Form_pg_attribute attributeForm =  TupleDescAttr(tupleDescriptor, columnIndex - 1);
 				Index tableId = neededColumn->varno;
 
 				column = makeVar(tableId, columnIndex, attributeForm->atttypid,
@@ -1907,8 +1891,8 @@ CStoreBeginForeignScan(ForeignScanState *scanState, int executorFlags)
 	TableReadState *readState = NULL;
 	Oid foreignTableId = InvalidOid;
 	CStoreFdwOptions *cstoreFdwOptions = NULL;
-	TupleTableSlot *tupleSlot = scanState->ss.ss_ScanTupleSlot;
-	TupleDesc tupleDescriptor = tupleSlot->tts_tupleDescriptor;
+	Relation currentRelation = scanState->ss.ss_currentRelation;
+	TupleDesc tupleDescriptor = RelationGetDescr(currentRelation);
 	List *columnList = NIL;
 	ForeignScan *foreignScan = NULL;
 	List *foreignPrivateList = NIL;
@@ -2053,13 +2037,13 @@ CStoreAcquireSampleRows(Relation relation, int logLevel,
 
 	TupleDesc tupleDescriptor = RelationGetDescr(relation);
 	uint32 columnCount = tupleDescriptor->natts;
-	Form_pg_attribute *attributeFormArray = tupleDescriptor->attrs;
+
 
 	/* create list of columns of the relation */
 	uint32 columnIndex = 0;
 	for (columnIndex = 0; columnIndex < columnCount; columnIndex++)
 	{
-		Form_pg_attribute attributeForm = attributeFormArray[columnIndex];
+		Form_pg_attribute attributeForm = TupleDescAttr(tupleDescriptor, columnIndex);
 		const Index tableId = 1;
 
 		if (!attributeForm->attisdropped)
@@ -2078,7 +2062,11 @@ CStoreAcquireSampleRows(Relation relation, int logLevel,
 	/* set up tuple slot */
 	columnValues = palloc0(columnCount * sizeof(Datum));
 	columnNulls = palloc0(columnCount * sizeof(bool));
+#if PG_VERSION_NUM >= 110000
+	scanTupleSlot = MakeTupleTableSlot(NULL);
+#else
 	scanTupleSlot = MakeTupleTableSlot();
+#endif
 	scanTupleSlot->tts_tupleDescriptor = tupleDescriptor;
 	scanTupleSlot->tts_values = columnValues;
 	scanTupleSlot->tts_isnull = columnNulls;
@@ -2095,9 +2083,7 @@ CStoreAcquireSampleRows(Relation relation, int logLevel,
 	 */
 	tupleContext = AllocSetContextCreate(CurrentMemoryContext,
 										 "cstore_fdw temporary context",
-										 ALLOCSET_DEFAULT_MINSIZE,
-										 ALLOCSET_DEFAULT_INITSIZE,
-										 ALLOCSET_DEFAULT_MAXSIZE);
+										 ALLOCSET_DEFAULT_SIZES);
 
 	CStoreBeginForeignScan(scanState, executorFlags);
 
