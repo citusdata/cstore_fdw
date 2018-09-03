@@ -2,7 +2,7 @@
    "name": "cstore_fdw",
    "abstract": "Columnar Store for PostgreSQL",
    "description": "PostgreSQL extension which implements a Columnar Store.",
-   "version": "1.6.0",
+   "version": "2.0.0",
    "maintainer": "Murat Tuncer <mtuncer@citusdata.com>",
    "license": "apache_2_0",
    "provides": {
