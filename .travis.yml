@@ -22,7 +22,6 @@ before_install:
   - nuke_pg
 install:
   - sudo apt-get install protobuf-c-compiler
-  - sudo apt-get install libprotobuf-c0-dev
   - sudo locale-gen da_DK
   - sudo locale-gen da_DK.utf8
   - sudo pip install cpp-coveralls
