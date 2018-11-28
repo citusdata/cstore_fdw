@@ -46,6 +46,11 @@ So we need to install these packages first:
 
     # Ubuntu 10.4+
     sudo apt-get install protobuf-c-compiler
+    sudo apt-get install libprotobuf-c0-dev
+    
+    # Ubuntu 18.4+
+    sudo apt-get install protobuf-c-compiler
+    sudo apt-get install libprotobuf-c-dev
 
     # Mac OS X
     brew install protobuf-c
