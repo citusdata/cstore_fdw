@@ -135,11 +135,14 @@ static List * CStorePlanForeignModify(PlannerInfo *plannerInfo, ModifyTable *pla
 static void CStoreBeginForeignModify(ModifyTableState *modifyTableState,
 									 ResultRelInfo *relationInfo, List *fdwPrivate,
 									 int subplanIndex, int executorflags);
+static void CStoreBeginForeignInsert(ModifyTableState *modifyTableState,
+									 ResultRelInfo *relationInfo);
 static TupleTableSlot * CStoreExecForeignInsert(EState *executorState,
 												ResultRelInfo *relationInfo,
 												TupleTableSlot *tupleSlot,
 												TupleTableSlot *planSlot);
 static void CStoreEndForeignModify(EState *executorState, ResultRelInfo *relationInfo);
+static void CStoreEndForeignInsert(EState *executorState, ResultRelInfo *relationInfo);
 
 
 /* declarations for dynamic loading */
@@ -1206,6 +1209,11 @@ cstore_fdw_handler(PG_FUNCTION_ARGS)
 	fdwRoutine->ExecForeignInsert = CStoreExecForeignInsert;
 	fdwRoutine->EndForeignModify = CStoreEndForeignModify;
 
+#if PG_VERSION_NUM >= 110000
+	fdwRoutine->BeginForeignInsert = CStoreBeginForeignInsert;
+	fdwRoutine->EndForeignInsert = CStoreEndForeignInsert;
+#endif
+
 	PG_RETURN_POINTER(fdwRoutine);
 }
 
@@ -2231,18 +2239,15 @@ CStorePlanForeignModify(PlannerInfo *plannerInfo, ModifyTable *plan,
 }
 
 
-/* CStoreBeginForeignModify prepares cstore table for insert operation. */
+/*
+ * CStoreBeginForeignModify prepares cstore table for a modification.
+ * Only insert is currently supported.
+ */
 static void
 CStoreBeginForeignModify(ModifyTableState *modifyTableState,
 						 ResultRelInfo *relationInfo, List *fdwPrivate,
 						 int subplanIndex, int executorFlags)
 {
-	Oid  foreignTableOid = InvalidOid;
-	CStoreFdwOptions *cstoreFdwOptions = NULL;
-	TupleDesc tupleDescriptor = NULL;
-	TableWriteState *writeState = NULL;
-	Relation relation = NULL;
-
 	/* if Explain with no Analyze, do nothing */
 	if (executorFlags & EXEC_FLAG_EXPLAIN_ONLY)
 	{
@@ -2250,6 +2255,23 @@ CStoreBeginForeignModify(ModifyTableState *modifyTableState,
 	}
 
 	Assert (modifyTableState->operation == CMD_INSERT);
+
+	CStoreBeginForeignInsert(modifyTableState, relationInfo);
+}
+
+
+/*
+ * CStoreBeginForeignInsert prepares a cstore table for an insert or rows
+ * coming from a COPY.
+ */
+static void
+CStoreBeginForeignInsert(ModifyTableState *modifyTableState, ResultRelInfo *relationInfo)
+{
+	Oid  foreignTableOid = InvalidOid;
+	CStoreFdwOptions *cstoreFdwOptions = NULL;
+	TupleDesc tupleDescriptor = NULL;
+	TableWriteState *writeState = NULL;
+	Relation relation = NULL;
 
 	foreignTableOid = RelationGetRelid(relationInfo->ri_RelationDesc);
 	relation = heap_open(foreignTableOid, ShareUpdateExclusiveLock);
@@ -2294,9 +2316,22 @@ CStoreExecForeignInsert(EState *executorState, ResultRelInfo *relationInfo,
 }
 
 
-/* CStoreEndForeignModify ends the current insert operation. */
+/*
+ * CStoreEndForeignModify ends the current modification. Only insert is currently
+ * supported.
+ */
 static void
 CStoreEndForeignModify(EState *executorState, ResultRelInfo *relationInfo)
+{
+	CStoreEndForeignInsert(executorState, relationInfo);
+}
+
+
+/*
+ * CStoreEndForeignInsert ends the current insert or COPY operation.
+ */
+static void
+CStoreEndForeignInsert(EState *executorState, ResultRelInfo *relationInfo)
 {
 	TableWriteState *writeState = (TableWriteState*) relationInfo->ri_FdwState;
 
@@ -2309,4 +2344,3 @@ CStoreEndForeignModify(EState *executorState, ResultRelInfo *relationInfo)
 		heap_close(relation, ShareUpdateExclusiveLock);
 	}
 }
-
