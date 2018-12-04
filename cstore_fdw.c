@@ -151,6 +151,10 @@ static TupleTableSlot * CStoreExecForeignInsert(EState *executorState,
 												TupleTableSlot *planSlot);
 static void CStoreEndForeignModify(EState *executorState, ResultRelInfo *relationInfo);
 static void CStoreEndForeignInsert(EState *executorState, ResultRelInfo *relationInfo);
+#if PG_VERSION_NUM >= 90600
+static bool CStoreIsForeignScanParallelSafe(PlannerInfo *root, RelOptInfo *rel,
+											RangeTblEntry *rte);
+#endif
 
 
 /* declarations for dynamic loading */
@@ -1202,6 +1206,10 @@ cstore_fdw_handler(PG_FUNCTION_ARGS)
 #if PG_VERSION_NUM >= 110000
 	fdwRoutine->BeginForeignInsert = CStoreBeginForeignInsert;
 	fdwRoutine->EndForeignInsert = CStoreEndForeignInsert;
+#endif
+
+#if PG_VERSION_NUM >= 90600
+	fdwRoutine->IsForeignScanParallelSafe = CStoreIsForeignScanParallelSafe;
 #endif
 
 	PG_RETURN_POINTER(fdwRoutine);
@@ -2272,3 +2280,23 @@ CStoreEndForeignInsert(EState *executorState, ResultRelInfo *relationInfo)
 		heap_close(relation, NoLock);
 	}
 }
+
+
+#if PG_VERSION_NUM >= 90600
+/*
+ * CStoreIsForeignScanParallelSafe always returns true to indicate that
+ * reading from a cstore_fdw table in a parallel worker is safe. This
+ * does not enable parallelism for queries on individual cstore_fdw
+ * tables, but does allow parallel scans of cstore_fdw partitions.
+ *
+ * cstore_fdw is parallel-safe because all writes are immediately committed
+ * to disk and then read from disk. There is no uncommitted state that needs
+ * to be shared across processes.
+ */
+static bool
+CStoreIsForeignScanParallelSafe(PlannerInfo *root, RelOptInfo *rel,
+								RangeTblEntry *rte)
+{
+	return true;
+}
+#endif
