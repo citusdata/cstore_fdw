@@ -28,6 +28,11 @@ ifeq ($(enable_coverage),yes)
 	EXTRA_CLEAN += *.gcno
 endif
 
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+	PG_CPPFLAGS += -I/usr/local/include
+endif
+
 #
 # Users need to specify their Postgres installation path through pg_config. For
 # example: /usr/local/pgsql/bin/pg_config or /usr/lib/postgresql/9.3/bin/pg_config
