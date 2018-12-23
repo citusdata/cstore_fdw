@@ -17,6 +17,7 @@
 #include "postgres.h"
 #include "cstore_fdw.h"
 #include "cstore_metadata_serialization.h"
+#include "cstore_version_compat.h"
 
 #include <sys/stat.h>
 #include "access/nbtree.h"
@@ -149,7 +150,7 @@ CStoreBeginWrite(const char *filename, CompressionType compressionType,
 	for (columnIndex = 0; columnIndex < columnCount; columnIndex++)
 	{
 		FmgrInfo *comparisonFunction = NULL;
-		FormData_pg_attribute *attributeForm = tupleDescriptor->attrs[columnIndex];
+		FormData_pg_attribute *attributeForm = TupleDescAttr(tupleDescriptor, columnIndex);
 
 		if (!attributeForm->attisdropped)
 		{
@@ -168,9 +169,7 @@ CStoreBeginWrite(const char *filename, CompressionType compressionType,
 	 */
 	stripeWriteContext = AllocSetContextCreate(CurrentMemoryContext,
 											   "Stripe Write Memory Context",
-											   ALLOCSET_DEFAULT_MINSIZE,
-											   ALLOCSET_DEFAULT_INITSIZE,
-											   ALLOCSET_DEFAULT_MAXSIZE);
+											   ALLOCSET_DEFAULT_SIZES);
 
 	columnMaskArray = palloc(columnCount * sizeof(bool));
 	memset(columnMaskArray, true, columnCount);
@@ -258,7 +257,7 @@ CStoreWriteRow(TableWriteState *writeState, Datum *columnValues, bool *columnNul
 			FmgrInfo *comparisonFunction =
 				writeState->comparisonFunctionArray[columnIndex];
 			Form_pg_attribute attributeForm =
-				writeState->tupleDescriptor->attrs[columnIndex];
+				TupleDescAttr(writeState->tupleDescriptor, columnIndex);
 			bool columnTypeByValue = attributeForm->attbyval;
 			int columnTypeLength = attributeForm->attlen;
 			Oid columnCollation = attributeForm->attcollation;
@@ -422,23 +421,14 @@ CreateEmptyStripeBuffers(uint32 stripeMaxRowCount, uint32 blockRowCount,
 	StripeBuffers *stripeBuffers = NULL;
 	uint32 columnIndex = 0;
 	uint32 maxBlockCount = (stripeMaxRowCount / blockRowCount) + 1;
-
 	ColumnBuffers **columnBuffersArray = palloc0(columnCount * sizeof(ColumnBuffers *));
-	ColumnBlockData **blockDataArray = palloc0(columnCount * sizeof(ColumnBlockData*));
 
 	for (columnIndex = 0; columnIndex < columnCount; columnIndex++)
 	{
 		uint32 blockIndex = 0;
-		ColumnBlockBuffers **blockBuffersArray = NULL;
-		ColumnBlockData *blockData = palloc0(sizeof(ColumnBlockData));
-		bool *existsArray = palloc0(blockRowCount * sizeof(bool));
-		Datum *valueArray = palloc0(blockRowCount * sizeof(Datum));
+		ColumnBlockBuffers **blockBuffersArray =
+			palloc0(maxBlockCount * sizeof(ColumnBlockBuffers *));
 
-		blockData->existsArray = existsArray;
-		blockData->valueArray = valueArray;
-		blockData->valueBuffer = NULL;
-		blockDataArray[columnIndex] = blockData;
-		blockBuffersArray = palloc0(maxBlockCount * sizeof(ColumnBlockBuffers *));
 		for (blockIndex = 0; blockIndex < maxBlockCount; blockIndex++)
 		{
 			blockBuffersArray[blockIndex] = palloc0(sizeof(ColumnBlockBuffers));
@@ -649,7 +639,7 @@ CreateSkipListBufferArray(StripeSkipList *stripeSkipList, TupleDesc tupleDescrip
 		StringInfo skipListBuffer = NULL;
 		ColumnBlockSkipNode *blockSkipNodeArray =
 			stripeSkipList->blockSkipNodeArray[columnIndex];
-		Form_pg_attribute attributeForm = tupleDescriptor->attrs[columnIndex];
+		Form_pg_attribute attributeForm = TupleDescAttr(tupleDescriptor, columnIndex);
 
 		skipListBuffer = SerializeColumnSkipList(blockSkipNodeArray,
 												 stripeSkipList->blockCount,

@@ -4,10 +4,11 @@ cstore_fdw
 [![Build Status](https://travis-ci.org/citusdata/cstore_fdw.svg?branch=master)][status]
 [![Coverage](http://img.shields.io/coveralls/citusdata/cstore_fdw/master.svg)][coverage]
 
-This extension implements a columnar store for PostgreSQL. Columnar stores
-provide notable benefits for analytic use-cases where data is loaded in batches.
+Cstore_fdw is an open source columnar store extension for PostgreSQL. Columnar stores provide notable benefits for analytics use cases where data is loaded in batches. Cstore_fdw’s columnar nature delivers performance by only reading relevant data from disk, and it may compress data 6x-10x to reduce space requirements for data archival.
 
-Join the [Mailing List][mailing-list] to stay on top of the latest developments.
+Cstore_fdw is developed by [Citus Data](https://www.citusdata.com) and can be used in combination with [Citus](https://github.com/citusdata/citus), a postgres extension that intelligently distributes your data and queries across many nodes so your database can scale and your queries are fast. If you have any questions about how Citus can help you scale or how to use Citus in combination with cstore_fdw, [please let us know](https://www.citusdata.com/about/contact_us/).
+
+Join the [Mailing List][mailing-list] to stay on top of the latest developments for Cstore_fdw.
 
 
 Introduction
@@ -51,8 +52,7 @@ So we need to install these packages first:
     brew install protobuf-c
 
 **Note.** In CentOS 5, 6, and 7, you may need to install or update EPEL 5, 6, or 7 repositories.
- See [this page]
-(https://support.rackspace.com/how-to/install-epel-and-additional-repositories-on-centos-and-red-hat/)
+ See [this page](https://support.rackspace.com/how-to/install-epel-and-additional-repositories-on-centos-and-red-hat/)
 for instructions.
 
 **Note.** In Amazon Linux, the EPEL repository is installed by default, but not
@@ -67,8 +67,8 @@ installation's bin/ directory path. For example:
     PATH=/usr/local/pgsql/bin/:$PATH make
     sudo PATH=/usr/local/pgsql/bin/:$PATH make install
 
-**Note.** cstore_fdw requires PostgreSQL 9.3, 9.4 or 9.5. It doesn't support earlier
-versions of PostgreSQL.
+**Note.** cstore_fdw requires PostgreSQL 9.3, 9.4, 9.5, 9.6 or 10. It doesn't
+support earlier versions of PostgreSQL.
 
 
 Usage
@@ -115,13 +115,13 @@ most efficient execution plan for each query.
 commands. We also don't support single row inserts.
 
 
-Updating from earlier versions to 1.4.1
+Updating from earlier versions to 1.6
 ---------------------------------------
 
-To update an existing cstore_fdw installation from versions earlier than 1.4.1
+To update an existing cstore_fdw installation from versions earlier than 1.6
 you can take the following steps:
 
-* Download and install cstore_fdw version 1.4.1 using instructions from the "Building"
+* Download and install cstore_fdw version 1.6 using instructions from the "Building"
   section,
 * Restart the PostgreSQL server,
 * Run ```ALTER EXTENSION cstore_fdw UPDATE;```
@@ -284,6 +284,30 @@ the installation:
 
 Changeset
 ---------
+### Version 1.6.2
+* (Fix) Add support for PostgreSQL 11
+### Version 1.6.1
+* (Fix) Fix crash during truncate (Cstore crashing server when enabled, not used)
+* (Fix) No such file or directory warning when attempting to drop database
+### Version 1.6
+* (Feature) Added support for PostgreSQL 10.
+* (Fix) Removed table files when a schema, extension or database is dropped.
+* (Fix) Removed unused code fragments.
+* (Fix) Fixed incorrect initialization of stripe buffers.
+* (Fix) Checked user access rights when executing truncate.
+* (Fix) Made copy command cancellable.
+* (Fix) Fixed namespace issue regarding drop table.
+
+### Version 1.5.1
+* (Fix) Verify cstore_fdw server on CREATE FOREIGN TABLE command
+
+### Version 1.5
+* (Feature) Added support for PostgreSQL 9.6.
+* (Fix) Removed table data when cstore_fdw table is indirectly dropped.
+* (Fix) Removed unused code fragments.
+* (Fix) Fixed column selection logic to return columns used in expressions.
+* (Fix) Prevented alter table command from changinf column type to incompatible types.
+
 ### Version 1.4.1
 
 * (Fix) Compatibility fix for Citus [copy command][copy-command].
@@ -324,7 +348,7 @@ Changeset
 Copyright
 ---------
 
-Copyright (c) 2016 Citus Data, Inc.
+Copyright (c) 2017 Citus Data, Inc.
 
 This module is free software; you can redistribute it and/or modify it under the
 Apache v2.0 License.

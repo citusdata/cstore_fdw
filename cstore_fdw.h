@@ -16,6 +16,7 @@
 
 #include "access/tupdesc.h"
 #include "fmgr.h"
+#include "catalog/pg_am.h"
 #include "catalog/pg_foreign_server.h"
 #include "catalog/pg_foreign_table.h"
 #include "lib/stringinfo.h"
@@ -47,7 +48,7 @@
 /* CStore file signature */
 #define CSTORE_MAGIC_NUMBER "citus_cstore"
 #define CSTORE_VERSION_MAJOR 1
-#define CSTORE_VERSION_MINOR 4
+#define CSTORE_VERSION_MINOR 6
 
 /* miscellaneous defines */
 #define CSTORE_FDW_NAME "cstore_fdw"
@@ -311,6 +312,7 @@ extern Datum cstore_ddl_event_end_trigger(PG_FUNCTION_ARGS);
 
 /* Function declarations for utility UDFs */
 extern Datum cstore_table_size(PG_FUNCTION_ARGS);
+extern Datum cstore_clean_table_resources(PG_FUNCTION_ARGS);
 
 /* Function declarations for foreign data wrapper */
 extern Datum cstore_fdw_handler(PG_FUNCTION_ARGS);
