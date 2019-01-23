@@ -14,9 +14,9 @@ Join the [Mailing List][mailing-list] to stay on top of the latest developments 
 Introduction
 ------------
 
-This extension uses the Optimized Row Columnar (ORC) format for its data layout.
-ORC improves upon the RCFile format developed at Facebook, and brings the
-following benefits:
+This extension uses a format for its data layout that is inspired by ORC,
+the Optimized Row Columnar format. Like ORC, the cstore format improves
+upon RCFile developed at Facebook, and brings the following benefits:
 
 * Compression: Reduces in-memory and on-disk data size by 2-4x. Can be extended
   to support different codecs.
