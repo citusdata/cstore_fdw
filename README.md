@@ -144,7 +144,7 @@ Then, let's log into Postgres, and run the following commands to create a column
 store foreign table:
 
 ```SQL
--- load extension first time after install
+-- load extension first time after install (make sure that this command is being executed in schema "public"):
 CREATE EXTENSION cstore_fdw;
 
 -- create server object
