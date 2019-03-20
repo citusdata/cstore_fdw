@@ -31,6 +31,7 @@ endif
 UNAME_S := $(shell uname -s)
 ifeq ($(UNAME_S),Darwin)
 	PG_CPPFLAGS += -I/usr/local/include
+	PG_CPPFLAGS += -I/usr/include
 endif
 
 #

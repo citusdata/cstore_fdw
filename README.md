@@ -63,6 +63,8 @@ for instructions.
 enabled. See [these instructions](http://aws.amazon.com/amazon-linux-ami/faqs/#epel)
 for how to enable it.
 
+**NOTE.** On Mac OS X Mojave (10.14), you need to install additional header files via `open /Library/Developer/CommandLineTools/Packages/macOS_SDK_headers_for_macOS_10.14.pkg`.
+
 Once you have protobuf-c installed on your machine, you are ready to build
 cstore\_fdw.  For this, you need to include the pg\_config directory path in
 your make command. This path is typically the same as your PostgreSQL
@@ -71,7 +73,7 @@ installation's bin/ directory path. For example:
     PATH=/usr/local/pgsql/bin/:$PATH make
     sudo PATH=/usr/local/pgsql/bin/:$PATH make install
 
-**Note.** cstore_fdw requires PostgreSQL 9.3, 9.4, 9.5, 9.6 or 10. It doesn't
+**Note.** cstore_fdw requires PostgreSQL 9.3, 9.4, 9.5, 9.6, 10, or 11. It doesn't
 support earlier versions of PostgreSQL.
 
 
