@@ -46,7 +46,7 @@ ifeq (,$(findstring $(MAJORVERSION), 9.3 9.4 9.5 9.6 10 11))
 endif
 
 cstore.pb-c.c: cstore.proto
-	protoc-c --c_out=. cstore.proto
+	protoc-c --c_out=. --proto_path=$(srcdir) $(srcdir)/cstore.proto
 
 installcheck: remove_cstore_files
 

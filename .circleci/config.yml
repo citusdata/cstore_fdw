@@ -1,0 +1,117 @@
+version: 2.1
+
+jobs:
+  build:
+    docker:
+      - {image: 'citusdata/extbuilder:debug'}
+    shell: /bin/bash -euxo pipefail
+    environment:
+      IFS: $'\n\t'
+    steps:
+      - run:
+          name: 'Create workspace'
+          command: |
+            mkdir -p ./workspace/install "${HOME}/build"
+      - {checkout: {path: './workspace/src'}}
+      - run:
+          name: 'Build'
+          command: |
+            pushd ./workspace/src
+            mkdir ./debian
+            echo '10
+            11' > ./debian/pgversions
+
+            export CFLAGS='-Werror -ggdb -Og'
+            makeflags="-j$(nproc)"
+
+            pg_buildext -m "${makeflags}" install "${HOME}/build/pgsql-%v" pgsql-%v
+            popd
+
+            mv ./workspace/src/debian/pgsql-* ./workspace/install
+            rm -rf .workspace/src/.git .workspace/src/debian
+      - {persist_to_workspace: {root: './workspace', paths: [.]}}
+  test:
+    docker:
+      - {image: 'citusdata/exttester-10:reporting'}
+    working_directory: /home/circleci/project
+    shell: /bin/bash -euxo pipefail
+    environment:
+      IFS: $'\n\t'
+    steps:
+      - {attach_workspace: {at: ./workspace}}
+      - run:
+          name: 'Install extension'
+          command: |
+            apt-get update
+            apt-get install -y --no-install-recommends libprotobuf-c1 locales-all bc
+            cp -R ./workspace/install/pgsql-${PG_MAJOR}/* /
+            chown -R circleci:circleci /home/circleci
+      - run:
+          name: 'Run tests'
+          shell: /usr/local/bin/gosu circleci /bin/bash -euxo pipefail
+          command: |
+            SRC_DIR="$(pwd)/workspace/src"
+
+            echo 'shared_preload_libraries=cstore_fdw' > /tmp/postgres-extra.conf
+
+            ulimit -c unlimited
+
+            REGRESS_OPTS="--temp-instance=${HOME}/tmp_check --launcher=${SRC_DIR}/log_test_times --temp-config=/tmp/postgres-extra.conf"
+
+            if [ -z ${PGXS_SCHEDULE+x} ]; then
+              SUITE_NAME='regress'
+            else
+              SUITE_NAME=$(basename "${PGXS_SCHEDULE%.*}")
+              REGRESS_OPTS="${REGRESS_OPTS} --schedule=${PGXS_SCHEDULE}"
+            fi
+
+            mkdir -p /tmp/pgxs/{results,reports}
+
+            RESULTS_DIR="/tmp/pgxs/results"
+            export OUTPUT_DIR="${RESULTS_DIR}/${SUITE_NAME}"
+            REGRESS_OPTS="${REGRESS_OPTS} --outputdir=${OUTPUT_DIR}"
+
+            mkdir -p "${OUTPUT_DIR}"/{sql,expected}
+
+            export REGRESS_OPTS
+            export PG_CONFIG="/usr/lib/postgresql/${PG_MAJOR}/bin/pg_config"
+            export PG_REGRESS_DIFF_OPTS='-dU3 -w'
+
+            pushd "${SRC_DIR}"
+
+            set +x
+
+            exec 3>&1 4>&2
+            exec > >(tee "${OUTPUT_DIR}/out.txt" >&3) 2> >(tee "${OUTPUT_DIR}/err.txt" >&4)
+
+            start_time=$(date +%s.%N)
+            echo "began $(date -d @${start_time} --iso-8601=s)"
+
+            status=0
+
+            echo "inputdir ${SRC_DIR}"
+            make installcheck || status=$?
+
+            end_time=$(date +%s.%N)
+            echo "ended $(date -d @${end_time} --iso-8601=s)"
+
+            echo "elapsed $(echo "${end_time}-${start_time}" | bc -l)"
+
+            exec 1>&3- 2>&4-
+            set -x
+
+            generate-test-reports "${RESULTS_DIR}"
+
+            mkdir -p /tmp/pgxs/reports/pg_regress
+            mv "${RESULTS_DIR}"/*.xml /tmp/pgxs/reports/pg_regress/
+
+            exit $status
+      - {store_test_results: {path: '/tmp/pgxs/reports'}}
+      - {store_artifacts: {path: '/tmp/pgxs/results'}}
+      - {store_artifacts: {path: '/tmp/pgxs/reports'}}
+workflows:
+  version: 2
+  build_and_test:
+    jobs:
+      - build
+      - {test: {requires: [build]}}
