@@ -23,7 +23,11 @@
 #include "access/nbtree.h"
 #include "catalog/pg_collation.h"
 #include "commands/defrem.h"
+#if PG_VERSION_NUM >= 120000
+#include "optimizer/optimizer.h"
+#else
 #include "optimizer/var.h"
+#endif
 #include "port.h"
 #include "storage/fd.h"
 #include "utils/memutils.h"
@@ -482,7 +486,7 @@ CreateEmptyStripeSkipList(uint32 stripeMaxRowCount, uint32 blockRowCount,
 
 /*
  * FlushStripe flushes current stripe data into the file. The function first ensures
- * the last data block for each column is properly serialized and compressed. Then, 
+ * the last data block for each column is properly serialized and compressed. Then,
  * the function creates the skip list and footer buffers. Finally, the function
  * flushes the skip list, data, and footer buffers to the file.
  */
@@ -751,7 +755,7 @@ SerializeSingleDatum(StringInfo datumBuffer, Datum datum, bool datumTypeByValue,
 		Assert(!datumTypeByValue);
 		memcpy(currentDatumDataPointer, DatumGetPointer(datum), datumLength);
 	}
-	
+
 	datumBuffer->len += datumLengthAligned;
 }
 
