@@ -1553,22 +1553,15 @@ ValidateForeignTableOptions(char *filename, char *compressionTypeString,
 
 /*
  * CStoreDefaultFilePath constructs the default file path to use for a cstore_fdw
- * table. The path is of the form $PGDATA/cstore_fdw/{databaseOid}/{relfilenode}.
+ * table. The path is of the form $PGDATA/cstore_fdw/{databaseOid}/{foreignTableId}.
  */
 static char *
 CStoreDefaultFilePath(Oid foreignTableId)
 {
-	Relation relation = relation_open(foreignTableId, AccessShareLock);
-	RelFileNode relationFileNode = relation->rd_node;
-
-	Oid databaseOid = relationFileNode.dbNode;
-	Oid relationFileOid = relationFileNode.relNode;
-
+	Oid databaseOid = MyDatabaseId;
 	StringInfo cstoreFilePath = makeStringInfo();
 	appendStringInfo(cstoreFilePath, "%s/%s/%u/%u", DataDir, CSTORE_FDW_NAME,
-					 databaseOid, relationFileOid);
-
-	relation_close(relation, AccessShareLock);
+					 databaseOid, foreignTableId);
 
 	return cstoreFilePath->data;
 }
