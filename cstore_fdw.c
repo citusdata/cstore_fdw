@@ -2167,11 +2167,7 @@ CStoreAcquireSampleRows(Relation relation, int logLevel,
 		MemoryContextSwitchTo(oldContext);
 
 		/* if there are no more records to read, break */
-#if PG_VERSION_NUM >= 120000
 		if (TTS_EMPTY(scanTupleSlot))
-#else
-		if (scanTupleSlot->tts_isempty)
-#endif
 		{
 			break;
 		}
@@ -2357,6 +2353,7 @@ CStoreExecForeignInsert(EState *executorState, ResultRelInfo *relationInfo,
 		/* detoast any toasted attributes */
 		HeapTuple newTuple = toast_flatten_tuple(heapTuple,
 												 tupleSlot->tts_tupleDescriptor);
+
 		ExecForceStoreHeapTuple(newTuple, tupleSlot, true);
 	}
 
