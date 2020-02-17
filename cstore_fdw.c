@@ -986,13 +986,7 @@ DistributedTable(Oid relationId)
 	bool distributedTable = false;
 	Oid partitionOid = InvalidOid;
 	Relation heapRelation = NULL;
-#if PG_VERSION_NUM >= 120000
 	TableScanDesc scanDesc = NULL;
-#define heap_beginscan table_beginscan
-#define heap_endscan table_endscan
-#else
-	HeapScanDesc scanDesc = NULL;
-#endif
 	const int scanKeyCount = 1;
 	ScanKeyData scanKey[1];
 	HeapTuple heapTuple = NULL;
@@ -1017,13 +1011,13 @@ DistributedTable(Oid relationId)
 	ScanKeyInit(&scanKey[0], ATTR_NUM_PARTITION_RELATION_ID, InvalidStrategy,
 				F_OIDEQ, ObjectIdGetDatum(relationId));
 
-	scanDesc = heap_beginscan(heapRelation, SnapshotSelf, scanKeyCount, scanKey);
+	scanDesc = table_beginscan(heapRelation, SnapshotSelf, scanKeyCount, scanKey);
 
 	heapTuple = heap_getnext(scanDesc, ForwardScanDirection);
 
 	distributedTable = HeapTupleIsValid(heapTuple);
 
-	heap_endscan(scanDesc);
+	table_endscan(scanDesc);
 	relation_close(heapRelation, AccessShareLock);
 
 	return distributedTable;
