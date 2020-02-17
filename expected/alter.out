@@ -127,6 +127,18 @@ SELECT * from test_alter_table;
  1 | 4 | ABCDEF
 (7 rows)
 
+SELECT count(*) from test_alter_table;
+ count 
+-------
+     7
+(1 row)
+
+SELECT count(t.*) from test_alter_table t;
+ count 
+-------
+     7
+(1 row)
+
 -- unsupported default values
 ALTER FOREIGN TABLE test_alter_table ADD COLUMN g boolean DEFAULT isfinite(current_date);
 ALTER FOREIGN TABLE test_alter_table ADD COLUMN h DATE DEFAULT current_date;
