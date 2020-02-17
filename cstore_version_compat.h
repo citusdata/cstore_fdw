@@ -45,6 +45,14 @@
 					 completionTag)
 #endif
 
+#if PG_VERSION_NUM < 120000
+#define TTS_EMPTY(slot)	((slot)->tts_isempty)
+#define ExecForceStoreHeapTuple(tuple, slot, shouldFree) \
+		ExecStoreTuple(newTuple, tupleSlot, InvalidBuffer,  shouldFree);
+#define HeapScanDesc TableScanDesc
+#define table_beginscan heap_beginscan
+#define table_endscan heap_endscan
 
+#endif
 
 #endif /* CSTORE_COMPAT_H */
