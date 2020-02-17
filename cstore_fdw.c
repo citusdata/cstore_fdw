@@ -1387,6 +1387,7 @@ OptionNamesString(Oid currentContextId)
 	return optionNamesString;
 }
 
+
 /*
  * GetSlotHeapTuple abstracts getting HeapTuple from TupleTableSlot between versions
  */
@@ -1399,6 +1400,7 @@ GetSlotHeapTuple(TupleTableSlot *tts)
 	return tts->tts_tuple;
 #endif
 }
+
 
 /*
  * CStoreGetOptions returns the option values to be used when reading and writing
@@ -1553,15 +1555,29 @@ ValidateForeignTableOptions(char *filename, char *compressionTypeString,
 
 /*
  * CStoreDefaultFilePath constructs the default file path to use for a cstore_fdw
- * table. The path is of the form $PGDATA/cstore_fdw/{databaseOid}/{foreignTableId}.
+ * table. The path is of the form $PGDATA/cstore_fdw/{databaseOid}/{relfilenode}.
  */
 static char *
 CStoreDefaultFilePath(Oid foreignTableId)
 {
-	Oid databaseOid = MyDatabaseId;
+	Relation relation = relation_open(foreignTableId, AccessShareLock);
+	RelFileNode relationFileNode = relation->rd_node;
+	Oid databaseOid = relationFileNode.dbNode;
+	Oid relationFileOid = relationFileNode.relNode;
+
+	relation_close(relation, AccessShareLock);
+
+	/* PG12 onward does not create relfilenode for foreign tables */
+	if (databaseOid == InvalidOid)
+	{
+		databaseOid = MyDatabaseId;
+		relationFileOid = foreignTableId;
+
+	}
+
 	StringInfo cstoreFilePath = makeStringInfo();
 	appendStringInfo(cstoreFilePath, "%s/%s/%u/%u", DataDir, CSTORE_FDW_NAME,
-					 databaseOid, foreignTableId);
+					 databaseOid, relationFileOid);
 
 	return cstoreFilePath->data;
 }
