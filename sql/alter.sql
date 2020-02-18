@@ -53,6 +53,8 @@ ALTER FOREIGN TABLE test_alter_table DROP COLUMN c;
 ALTER FOREIGN TABLE test_alter_table DROP COLUMN e;
 ANALYZE test_alter_table;
 SELECT * from test_alter_table;
+SELECT count(*) from test_alter_table;
+SELECT count(t.*) from test_alter_table t;
 
 
 -- unsupported default values
