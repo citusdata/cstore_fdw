@@ -1878,6 +1878,12 @@ ColumnList(RelOptInfo *baserel, Oid foreignTableId)
 	{
 		ListCell *neededColumnCell = NULL;
 		Var *column = NULL;
+		Form_pg_attribute attributeForm =  TupleDescAttr(tupleDescriptor, columnIndex - 1);
+
+		if (attributeForm->attisdropped)
+		{
+			continue;
+		}
 
 		/* look for this column in the needed column list */
 		foreach(neededColumnCell, neededColumnList)
@@ -1890,7 +1896,6 @@ ColumnList(RelOptInfo *baserel, Oid foreignTableId)
 			}
 			else if (neededColumn->varattno == wholeRow)
 			{
-				Form_pg_attribute attributeForm =  TupleDescAttr(tupleDescriptor, columnIndex - 1);
 				Index tableId = neededColumn->varno;
 
 				column = makeVar(tableId, columnIndex, attributeForm->atttypid,
