@@ -23,10 +23,16 @@
 #include "access/skey.h"
 #include "commands/defrem.h"
 #include "nodes/makefuncs.h"
+#if PG_VERSION_NUM >= 120000
+#include "nodes/pathnodes.h"
+#include "nodes/nodeFuncs.h"
+#include "optimizer/optimizer.h"
+#else
 #include "optimizer/clauses.h"
 #include "optimizer/predtest.h"
-#include "optimizer/restrictinfo.h"
 #include "optimizer/var.h"
+#endif
+#include "optimizer/restrictinfo.h"
 #include "port.h"
 #include "storage/fd.h"
 #include "utils/memutils.h"
@@ -80,7 +86,7 @@ static void DeserializeBlockData(StripeBuffers *stripeBuffers, uint64 blockIndex
 								 TupleDesc tupleDescriptor);
 static Datum ColumnDefaultValue(TupleConstr *tupleConstraints,
 								Form_pg_attribute attributeForm);
-static int64 FileSize(FILE *file);
+static int64 FILESize(FILE *file);
 static StringInfo ReadFromFile(FILE *file, uint64 offset, uint32 size);
 static void ResetUncompressedBlockData(ColumnBlockData **blockDataArray,
 									   uint32 columnCount);
@@ -181,7 +187,7 @@ CStoreReadFooter(StringInfo tableFooterFilename)
 						errhint("Try copying in data to the table.")));
 	}
 
-	footerFileSize = FileSize(tableFooterFile);
+	footerFileSize = FILESize(tableFooterFile);
 	if (footerFileSize < CSTORE_POSTSCRIPT_SIZE_LENGTH)
 	{
 		ereport(ERROR, (errmsg("invalid cstore file")));
@@ -362,7 +368,7 @@ CreateEmptyBlockDataArray(uint32 columnCount, bool *columnMask, uint32 blockRowC
 			blockDataArray[columnIndex] = blockData;
 		}
 	}
-	
+
 	return blockDataArray;
 }
 
@@ -387,7 +393,7 @@ FreeColumnBlockDataArray(ColumnBlockData **blockDataArray, uint32 columnCount)
 			pfree(blockData);
 		}
 	}
-	
+
 	pfree(blockDataArray);
 }
 
@@ -947,7 +953,7 @@ GetOperatorByType(Oid typeId, Oid accessMethodId, int16 strategyNumber)
 }
 
 
-/* 
+/*
  * UpdateConstraint updates the base constraint with the given min/max values.
  * The function is copied from CitusDB's shard pruning logic.
  */
@@ -1289,7 +1295,7 @@ ColumnDefaultValue(TupleConstr *tupleConstraints, Form_pg_attribute attributeFor
 
 /* Returns the size of the given file handle. */
 static int64
-FileSize(FILE *file)
+FILESize(FILE *file)
 {
 	int64 fileSize = 0;
 	int fseekResult = 0;

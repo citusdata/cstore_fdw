@@ -43,7 +43,14 @@
 #include "optimizer/pathnode.h"
 #include "optimizer/planmain.h"
 #include "optimizer/restrictinfo.h"
+#if PG_VERSION_NUM >= 120000
+#include "access/heapam.h"
+#include "access/tableam.h"
+#include "executor/tuptable.h"
+#include "optimizer/optimizer.h"
+#else
 #include "optimizer/var.h"
+#endif
 #include "parser/parser.h"
 #include "parser/parsetree.h"
 #include "parser/parse_coerce.h"
@@ -55,7 +62,11 @@
 #include "utils/memutils.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
+#if PG_VERSION_NUM >= 120000
+#include "utils/snapmgr.h"
+#else
 #include "utils/tqual.h"
+#endif
 
 
 /* local functions forward declarations */
@@ -94,6 +105,7 @@ static bool DirectoryExists(StringInfo directoryName);
 static void CreateDirectory(StringInfo directoryName);
 static void RemoveCStoreDatabaseDirectory(Oid databaseOid);
 static StringInfo OptionNamesString(Oid currentContextId);
+static HeapTuple GetSlotHeapTuple(TupleTableSlot *tts);
 static CStoreFdwOptions * CStoreGetOptions(Oid foreignTableId);
 static char * CStoreGetOptionValue(Oid foreignTableId, const char *optionName);
 static void ValidateForeignTableOptions(char *filename, char *compressionTypeString,
@@ -135,12 +147,18 @@ static List * CStorePlanForeignModify(PlannerInfo *plannerInfo, ModifyTable *pla
 static void CStoreBeginForeignModify(ModifyTableState *modifyTableState,
 									 ResultRelInfo *relationInfo, List *fdwPrivate,
 									 int subplanIndex, int executorflags);
+static void CStoreBeginForeignInsert(ModifyTableState *modifyTableState,
+									 ResultRelInfo *relationInfo);
 static TupleTableSlot * CStoreExecForeignInsert(EState *executorState,
 												ResultRelInfo *relationInfo,
 												TupleTableSlot *tupleSlot,
 												TupleTableSlot *planSlot);
 static void CStoreEndForeignModify(EState *executorState, ResultRelInfo *relationInfo);
-
+static void CStoreEndForeignInsert(EState *executorState, ResultRelInfo *relationInfo);
+#if PG_VERSION_NUM >= 90600
+static bool CStoreIsForeignScanParallelSafe(PlannerInfo *root, RelOptInfo *rel,
+											RangeTblEntry *rte);
+#endif
 
 /* declarations for dynamic loading */
 PG_MODULE_MAGIC;
@@ -572,7 +590,11 @@ CopyIntoCStoreTable(const CopyStmt *copyStatement, const char *queryString)
 	{
 		/* read the next row in tupleContext */
 		MemoryContext oldContext = MemoryContextSwitchTo(tupleContext);
+#if PG_VERSION_NUM >= 120000
+		nextRowFound = NextCopyFrom(copyState, NULL, columnValues, columnNulls);
+#else
 		nextRowFound = NextCopyFrom(copyState, NULL, columnValues, columnNulls, NULL);
+#endif
 		MemoryContextSwitchTo(oldContext);
 
 		/* write the row to the cstore file */
@@ -786,7 +808,7 @@ FindCStoreTables(List *tableList)
 }
 
 
-/* 
+/*
  * OpenRelationsForTruncate opens and locks relations for tables to be truncated.
  *
  * It also performs a permission checks to see if the user has truncate privilege
@@ -964,9 +986,9 @@ DistributedTable(Oid relationId)
 	bool distributedTable = false;
 	Oid partitionOid = InvalidOid;
 	Relation heapRelation = NULL;
-	HeapScanDesc scanDesc = NULL;
+	TableScanDesc scanDesc = NULL;
 	const int scanKeyCount = 1;
-	ScanKeyData scanKey[scanKeyCount];
+	ScanKeyData scanKey[1];
 	HeapTuple heapTuple = NULL;
 
 	bool missingOK = true;
@@ -989,13 +1011,13 @@ DistributedTable(Oid relationId)
 	ScanKeyInit(&scanKey[0], ATTR_NUM_PARTITION_RELATION_ID, InvalidStrategy,
 				F_OIDEQ, ObjectIdGetDatum(relationId));
 
-	scanDesc = heap_beginscan(heapRelation, SnapshotSelf, scanKeyCount, scanKey);
+	scanDesc = table_beginscan(heapRelation, SnapshotSelf, scanKeyCount, scanKey);
 
 	heapTuple = heap_getnext(scanDesc, ForwardScanDirection);
 
 	distributedTable = HeapTupleIsValid(heapTuple);
 
-	heap_endscan(scanDesc);
+	table_endscan(scanDesc);
 	relation_close(heapRelation, AccessShareLock);
 
 	return distributedTable;
@@ -1108,7 +1130,7 @@ CreateDirectory(StringInfo directoryName)
 
 /*
  * RemoveCStoreDatabaseDirectory removes CStore directory previously
- * created for this database. 
+ * created for this database.
  * However it does not remove 'cstore_fdw' directory even if there
  * are no other databases left.
  */
@@ -1205,6 +1227,15 @@ cstore_fdw_handler(PG_FUNCTION_ARGS)
 	fdwRoutine->BeginForeignModify = CStoreBeginForeignModify;
 	fdwRoutine->ExecForeignInsert = CStoreExecForeignInsert;
 	fdwRoutine->EndForeignModify = CStoreEndForeignModify;
+
+#if PG_VERSION_NUM >= 110000
+	fdwRoutine->BeginForeignInsert = CStoreBeginForeignInsert;
+	fdwRoutine->EndForeignInsert = CStoreEndForeignInsert;
+#endif
+
+#if PG_VERSION_NUM >= 90600
+	fdwRoutine->IsForeignScanParallelSafe = CStoreIsForeignScanParallelSafe;
+#endif
 
 	PG_RETURN_POINTER(fdwRoutine);
 }
@@ -1348,6 +1379,20 @@ OptionNamesString(Oid currentContextId)
 	}
 
 	return optionNamesString;
+}
+
+
+/*
+ * GetSlotHeapTuple abstracts getting HeapTuple from TupleTableSlot between versions
+ */
+static HeapTuple
+GetSlotHeapTuple(TupleTableSlot *tts)
+{
+#if PG_VERSION_NUM >= 120000
+	return tts->tts_ops->copy_heap_tuple(tts);
+#else
+	return tts->tts_tuple;
+#endif
 }
 
 
@@ -1510,16 +1555,23 @@ static char *
 CStoreDefaultFilePath(Oid foreignTableId)
 {
 	Relation relation = relation_open(foreignTableId, AccessShareLock);
-	RelFileNode relationFileNode = relation->rd_node; 
-
+	RelFileNode relationFileNode = relation->rd_node;
 	Oid databaseOid = relationFileNode.dbNode;
 	Oid relationFileOid = relationFileNode.relNode;
+
+	relation_close(relation, AccessShareLock);
+
+	/* PG12 onward does not create relfilenode for foreign tables */
+	if (databaseOid == InvalidOid)
+	{
+		databaseOid = MyDatabaseId;
+		relationFileOid = foreignTableId;
+
+	}
 
 	StringInfo cstoreFilePath = makeStringInfo();
 	appendStringInfo(cstoreFilePath, "%s/%s/%u/%u", DataDir, CSTORE_FDW_NAME,
 					 databaseOid, relationFileOid);
-
-	relation_close(relation, AccessShareLock);
 
 	return cstoreFilePath->data;
 }
@@ -2062,7 +2114,9 @@ CStoreAcquireSampleRows(Relation relation, int logLevel,
 	/* set up tuple slot */
 	columnValues = palloc0(columnCount * sizeof(Datum));
 	columnNulls = palloc0(columnCount * sizeof(bool));
-#if PG_VERSION_NUM >= 110000
+#if PG_VERSION_NUM >= 120000
+	scanTupleSlot = MakeTupleTableSlot(NULL, &TTSOpsVirtual);
+#elif PG_VERSION_NUM >= 110000
 	scanTupleSlot = MakeTupleTableSlot(NULL);
 #else
 	scanTupleSlot = MakeTupleTableSlot();
@@ -2107,7 +2161,7 @@ CStoreAcquireSampleRows(Relation relation, int logLevel,
 		MemoryContextSwitchTo(oldContext);
 
 		/* if there are no more records to read, break */
-		if (scanTupleSlot->tts_isempty)
+		if (TTS_EMPTY(scanTupleSlot))
 		{
 			break;
 		}
@@ -2223,18 +2277,15 @@ CStorePlanForeignModify(PlannerInfo *plannerInfo, ModifyTable *plan,
 }
 
 
-/* CStoreBeginForeignModify prepares cstore table for insert operation. */
+/*
+ * CStoreBeginForeignModify prepares cstore table for a modification.
+ * Only insert is currently supported.
+ */
 static void
 CStoreBeginForeignModify(ModifyTableState *modifyTableState,
 						 ResultRelInfo *relationInfo, List *fdwPrivate,
 						 int subplanIndex, int executorFlags)
 {
-	Oid  foreignTableOid = InvalidOid;
-	CStoreFdwOptions *cstoreFdwOptions = NULL;
-	TupleDesc tupleDescriptor = NULL;
-	TableWriteState *writeState = NULL;
-	Relation relation = NULL;
-
 	/* if Explain with no Analyze, do nothing */
 	if (executorFlags & EXEC_FLAG_EXPLAIN_ONLY)
 	{
@@ -2242,6 +2293,23 @@ CStoreBeginForeignModify(ModifyTableState *modifyTableState,
 	}
 
 	Assert (modifyTableState->operation == CMD_INSERT);
+
+	CStoreBeginForeignInsert(modifyTableState, relationInfo);
+}
+
+
+/*
+ * CStoreBeginForeignInsert prepares a cstore table for an insert or rows
+ * coming from a COPY.
+ */
+static void
+CStoreBeginForeignInsert(ModifyTableState *modifyTableState, ResultRelInfo *relationInfo)
+{
+	Oid  foreignTableOid = InvalidOid;
+	CStoreFdwOptions *cstoreFdwOptions = NULL;
+	TupleDesc tupleDescriptor = NULL;
+	TableWriteState *writeState = NULL;
+	Relation relation = NULL;
 
 	foreignTableOid = RelationGetRelid(relationInfo->ri_RelationDesc);
 	relation = heap_open(foreignTableOid, ShareUpdateExclusiveLock);
@@ -2268,14 +2336,19 @@ CStoreExecForeignInsert(EState *executorState, ResultRelInfo *relationInfo,
 						TupleTableSlot *tupleSlot, TupleTableSlot *planSlot)
 {
 	TableWriteState *writeState = (TableWriteState*) relationInfo->ri_FdwState;
+	HeapTuple heapTuple;
 
 	Assert(writeState != NULL);
 
-	if(HeapTupleHasExternal(tupleSlot->tts_tuple))
+	heapTuple = GetSlotHeapTuple(tupleSlot);
+
+	if (HeapTupleHasExternal(heapTuple))
 	{
 		/* detoast any toasted attributes */
-		tupleSlot->tts_tuple = toast_flatten_tuple(tupleSlot->tts_tuple,
-												   tupleSlot->tts_tupleDescriptor);
+		HeapTuple newTuple = toast_flatten_tuple(heapTuple,
+												 tupleSlot->tts_tupleDescriptor);
+
+		ExecForceStoreHeapTuple(newTuple, tupleSlot, true);
 	}
 
 	slot_getallattrs(tupleSlot);
@@ -2286,9 +2359,22 @@ CStoreExecForeignInsert(EState *executorState, ResultRelInfo *relationInfo,
 }
 
 
-/* CStoreEndForeignModify ends the current insert operation. */
+/*
+ * CStoreEndForeignModify ends the current modification. Only insert is currently
+ * supported.
+ */
 static void
 CStoreEndForeignModify(EState *executorState, ResultRelInfo *relationInfo)
+{
+	CStoreEndForeignInsert(executorState, relationInfo);
+}
+
+
+/*
+ * CStoreEndForeignInsert ends the current insert or COPY operation.
+ */
+static void
+CStoreEndForeignInsert(EState *executorState, ResultRelInfo *relationInfo)
 {
 	TableWriteState *writeState = (TableWriteState*) relationInfo->ri_FdwState;
 
@@ -2302,3 +2388,22 @@ CStoreEndForeignModify(EState *executorState, ResultRelInfo *relationInfo)
 	}
 }
 
+
+#if PG_VERSION_NUM >= 90600
+/*
+ * CStoreIsForeignScanParallelSafe always returns true to indicate that
+ * reading from a cstore_fdw table in a parallel worker is safe. This
+ * does not enable parallelism for queries on individual cstore_fdw
+ * tables, but does allow parallel scans of cstore_fdw partitions.
+ *
+ * cstore_fdw is parallel-safe because all writes are immediately committed
+ * to disk and then read from disk. There is no uncommitted state that needs
+ * to be shared across processes.
+ */
+static bool
+CStoreIsForeignScanParallelSafe(PlannerInfo *root, RelOptInfo *rel,
+								RangeTblEntry *rte)
+{
+	return true;
+}
+#endif

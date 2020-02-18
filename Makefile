@@ -28,6 +28,11 @@ ifeq ($(enable_coverage),yes)
 	EXTRA_CLEAN += *.gcno
 endif
 
+UNAME_S := $(shell uname -s)
+ifeq ($(UNAME_S),Darwin)
+	PG_CPPFLAGS += -I/usr/local/include
+endif
+
 #
 # Users need to specify their Postgres installation path through pg_config. For
 # example: /usr/local/pgsql/bin/pg_config or /usr/lib/postgresql/9.3/bin/pg_config
@@ -41,8 +46,8 @@ ifndef MAJORVERSION
     MAJORVERSION := $(basename $(VERSION))
 endif
 
-ifeq (,$(findstring $(MAJORVERSION), 9.3 9.4 9.5 9.6 10 11))
-    $(error PostgreSQL 9.3 or 9.4 or 9.5 or 9.6 or 10 or 11 is required to compile this extension)
+ifeq (,$(findstring $(MAJORVERSION), 9.3 9.4 9.5 9.6 10 11 12))
+    $(error PostgreSQL 9.3 to 12 is required to compile this extension)
 endif
 
 cstore.pb-c.c: cstore.proto

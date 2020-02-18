@@ -1,5 +1,5 @@
 sudo: required
-dist: trusty
+dist: bionic
 language: c
 cache:
   apt: true
@@ -16,8 +16,10 @@ env:
     - PGVERSION=9.6
     - PGVERSION=10
     - PGVERSION=11
+    - PGVERSION=12
+
 before_install:
-  - git clone -b v0.7.9 --depth 1 https://github.com/citusdata/tools.git
+  - git clone -b v0.7.13 --depth 1 https://github.com/citusdata/tools.git
   - sudo make -C tools install
   - setup_apt
   - nuke_pg

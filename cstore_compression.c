@@ -141,9 +141,16 @@ DecompressBuffer(StringInfo buffer, CompressionType compressionType)
 		decompressedData = palloc0(decompressedDataSize);
 
 #if PG_VERSION_NUM >= 90500
+
+#if PG_VERSION_NUM >= 120000
 		decompressedByteCount = pglz_decompress(CSTORE_COMPRESS_RAWDATA(buffer->data),
-												compressedDataSize,
-												decompressedData, decompressedDataSize);
+												compressedDataSize, decompressedData,
+												decompressedDataSize, true);
+#else
+		decompressedByteCount = pglz_decompress(CSTORE_COMPRESS_RAWDATA(buffer->data),
+												compressedDataSize, decompressedData,
+												decompressedDataSize);
+#endif
 
 		if (decompressedByteCount < 0)
 		{
