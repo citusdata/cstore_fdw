@@ -10,7 +10,7 @@
          "abstract": "Foreign Data Wrapper for Columnar Store Tables",
          "file": "cstore_fdw--1.7.sql",
          "docfile": "README.md",
-         "version": "1.6.2"
+         "version": "1.7.0"
       }
    },
    "prereqs": {
