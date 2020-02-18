@@ -119,7 +119,7 @@ most efficient execution plan for each query.
 commands. We also don't support single row inserts.
 
 
-Updating from earlier versions to 1.6
+Updating from earlier versions to 1.7
 ---------------------------------------
 
 To update an existing cstore_fdw installation from versions earlier than 1.6
@@ -288,6 +288,12 @@ the installation:
 
 Changeset
 ---------
+### Version 1.7.0
+* (Fix) Add support for PostgreSQL 12
+* (Fix) Support count(t.*) from t type queries
+* (Fix) Build failures for MacOS 10.14+
+* (Fix) Make foreign scan parallel safe
+* (Fix) Add support for PostgreSQL 11 COPY
 ### Version 1.6.2
 * (Fix) Add support for PostgreSQL 11
 ### Version 1.6.1
