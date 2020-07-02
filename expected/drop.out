@@ -60,7 +60,7 @@ SELECT count(*) FROM pg_ls_dir('cstore_fdw/' || :databaseoid);
 SELECT count(*) FROM pg_ls_dir('cstore_fdw') WHERE pg_ls_dir != :postgres_oid::text;
  count 
 -------
-     2
+     3
 (1 row)
 
 DROP EXTENSION cstore_fdw CASCADE;
@@ -71,7 +71,7 @@ drop cascades to foreign table test_table
 SELECT count(*) FROM pg_ls_dir('cstore_fdw') WHERE pg_ls_dir != :postgres_oid::text;
  count 
 -------
-     1
+     2
 (1 row)
 
 -- test database drop
@@ -83,7 +83,7 @@ CREATE FOREIGN TABLE test_table(data int) SERVER cstore_server;
 SELECT count(*) FROM pg_ls_dir('cstore_fdw') WHERE pg_ls_dir != :postgres_oid::text;
  count 
 -------
-     2
+     3
 (1 row)
 
 \c :datname
@@ -92,6 +92,6 @@ DROP DATABASE db_to_drop;
 SELECT count(*) FROM pg_ls_dir('cstore_fdw') WHERE pg_ls_dir != :postgres_oid::text;
  count 
 -------
-     1
+     3
 (1 row)
 
