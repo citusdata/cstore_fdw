@@ -55,3 +55,9 @@
 /expected/load.out
 
 *.pb-c.*
+*.bc
+*.Po
+results
+regression.diffs
+regression.out
+customer_reviews_*
