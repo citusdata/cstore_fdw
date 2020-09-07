@@ -2,6 +2,9 @@
 -- Test loading data into cstore_fdw tables.
 --
 
+\echo :SHOW_CONTEXT
+\echo :VERBOSITY
+
 -- COPY with incorrect delimiter
 COPY contestant FROM '@abs_srcdir@/data/contestants.1.csv'
 	WITH DELIMITER '|'; -- ERROR
