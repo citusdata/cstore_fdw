@@ -1,6 +1,9 @@
 sudo: required
 dist: bionic
 language: c
+arch:
+  -amd64
+  -ppc64le
 cache:
   apt: true
   directories:
