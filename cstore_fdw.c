@@ -70,6 +70,8 @@
 #if PG_VERSION_NUM < 120000
 #define table_open(x, y) heap_open(x, y)
 #define table_close(x, y) heap_close(x, y)
+#define table_openrv(x, y) heap_openrv(x, y)
+#define table_closerv(x, y) heap_closerv(x, y)
 #endif  /* PG_VERSION_NUM */
 
 /* local functions forward declarations */
