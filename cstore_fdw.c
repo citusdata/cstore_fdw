@@ -1926,7 +1926,7 @@ CStoreExplainForeignScan(ForeignScanState *scanState, ExplainState *explainState
 
 	ExplainPropertyText("CStore File", cstoreFdwOptions->filename, explainState);
 
-	/* supress file size if we're not showing cost details */
+	/* suppress file size if we're not showing cost details */
 	if (explainState->costs)
 	{
 		struct stat statBuffer;
