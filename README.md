@@ -71,7 +71,7 @@ installation's bin/ directory path. For example:
     PATH=/usr/local/pgsql/bin/:$PATH make
     sudo PATH=/usr/local/pgsql/bin/:$PATH make install
 
-**Note.** cstore_fdw requires PostgreSQL version from 9.3 to 12. It doesn't
+**Note.** cstore_fdw requires PostgreSQL version from 9.3 to 13. It doesn't
 support earlier versions of PostgreSQL.
 
 
