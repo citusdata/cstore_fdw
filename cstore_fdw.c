@@ -97,8 +97,7 @@ static void CStoreProcessUtility(Node *parseTree, const char *queryString,
 #endif
 static bool CopyCStoreTableStatement(CopyStmt* copyStatement);
 static void CheckSuperuserPrivilegesForCopy(const CopyStmt* copyStatement);
-static void CStoreProcessCopyCommand(CopyStmt *copyStatement, const char *queryString,
-									 char *completionTag);
+static uint64 CStoreProcessCopyCommand(CopyStmt *copyStatement, const char *queryString);
 static uint64 CopyIntoCStoreTable(const CopyStmt *copyStatement,
 								  const char *queryString);
 static uint64 CopyOutCStoreTable(CopyStmt* copyStatement, const char* queryString);
@@ -301,9 +300,6 @@ CStoreProcessUtility(Node * parseTree, const char * queryString,
 					 DestReceiver * destReceiver, char * completionTag)
 #endif
 {
-#if PG_VERSION_NUM >= 130000
-	char *completionTag = NULL;
-#endif
 #if PG_VERSION_NUM >= 100000
 	Node *parseTree = plannedStatement->utilityStmt;
 #endif
@@ -314,7 +310,21 @@ CStoreProcessUtility(Node * parseTree, const char * queryString,
 
 		if (CopyCStoreTableStatement(copyStatement))
 		{
-			CStoreProcessCopyCommand(copyStatement, queryString, completionTag);
+			uint64 processed =
+				CStoreProcessCopyCommand(copyStatement, queryString);
+
+#if PG_VERSION_NUM >= 130000
+			if (queryCompletion)
+			{
+				SetQueryCompletion(queryCompletion, CMDTAG_COPY, processed);
+			}
+#else
+			if (completionTag != NULL)
+			{
+				snprintf(completionTag, COMPLETION_TAG_BUFSIZE,
+						 "COPY " UINT64_FORMAT, processed);
+			}
+#endif
 		}
 		else
 		{
@@ -498,10 +508,11 @@ CheckSuperuserPrivilegesForCopy(const CopyStmt* copyStatement)
 /*
  * CStoreProcessCopyCommand handles COPY <cstore_table> FROM/TO ... statements.
  * It determines the copy direction and forwards execution to appropriate function.
+ * 
+ * It returns number of rows processed.
  */
-static void
-CStoreProcessCopyCommand(CopyStmt *copyStatement, const char* queryString,
-						 char *completionTag)
+static uint64
+CStoreProcessCopyCommand(CopyStmt *copyStatement, const char* queryString)
 {
 	uint64 processedCount = 0;
 
@@ -514,11 +525,7 @@ CStoreProcessCopyCommand(CopyStmt *copyStatement, const char* queryString,
 		processedCount = CopyOutCStoreTable(copyStatement, queryString);
 	}
 
-	if (completionTag != NULL)
-	{
-		snprintf(completionTag, COMPLETION_TAG_BUFSIZE, "COPY " UINT64_FORMAT,
-				 processedCount);
-	}
+	return processedCount;
 }
 
 
@@ -1575,6 +1582,7 @@ CStoreDefaultFilePath(Oid foreignTableId)
 	RelFileNode relationFileNode = relation->rd_node;
 	Oid databaseOid = relationFileNode.dbNode;
 	Oid relationFileOid = relationFileNode.relNode;
+	StringInfo cstoreFilePath = makeStringInfo();
 
 	relation_close(relation, AccessShareLock);
 
@@ -1586,7 +1594,6 @@ CStoreDefaultFilePath(Oid foreignTableId)
 
 	}
 
-	StringInfo cstoreFilePath = makeStringInfo();
 	appendStringInfo(cstoreFilePath, "%s/%s/%u/%u", DataDir, CSTORE_FDW_NAME,
 					 databaseOid, relationFileOid);
 
