@@ -24,7 +24,11 @@
 #include "access/htup_details.h"
 #include "access/reloptions.h"
 #include "access/sysattr.h"
+#if PG_VERSION_NUM >= 130000
+#include "access/heaptoast.h"
+#else
 #include "access/tuptoaster.h"
+#endif
 #include "catalog/namespace.h"
 #include "catalog/pg_foreign_table.h"
 #include "catalog/pg_namespace.h"
@@ -68,9 +72,18 @@
 #include "utils/tqual.h"
 #endif
 
+#include "cstore_version_compat.h"
+
 
 /* local functions forward declarations */
-#if PG_VERSION_NUM >= 100000
+#if PG_VERSION_NUM >= 130000
+static void CStoreProcessUtility(PlannedStmt *plannedStatement, const char *queryString,
+								 ProcessUtilityContext context,
+								 ParamListInfo paramListInfo,
+								 QueryEnvironment *queryEnvironment,
+								 DestReceiver *destReceiver,
+								 QueryCompletion *queryCompletion);
+#elif PG_VERSION_NUM >= 100000
 static void CStoreProcessUtility(PlannedStmt *plannedStatement, const char *queryString,
 								 ProcessUtilityContext context,
 								 ParamListInfo paramListInfo,
@@ -84,8 +97,7 @@ static void CStoreProcessUtility(Node *parseTree, const char *queryString,
 #endif
 static bool CopyCStoreTableStatement(CopyStmt* copyStatement);
 static void CheckSuperuserPrivilegesForCopy(const CopyStmt* copyStatement);
-static void CStoreProcessCopyCommand(CopyStmt *copyStatement, const char *queryString,
-									 char *completionTag);
+static uint64 CStoreProcessCopyCommand(CopyStmt *copyStatement, const char *queryString);
 static uint64 CopyIntoCStoreTable(const CopyStmt *copyStatement,
 								  const char *queryString);
 static uint64 CopyOutCStoreTable(CopyStmt* copyStatement, const char* queryString);
@@ -181,7 +193,8 @@ static ProcessUtility_hook_type PreviousProcessUtilityHook = NULL;
  */
 void _PG_init(void)
 {
-	PreviousProcessUtilityHook = ProcessUtility_hook;
+	PreviousProcessUtilityHook = (ProcessUtility_hook != NULL) ?
+								 ProcessUtility_hook : standard_ProcessUtility;
 	ProcessUtility_hook = CStoreProcessUtility;
 }
 
@@ -238,7 +251,7 @@ cstore_ddl_event_end_trigger(PG_FUNCTION_ARGS)
 		{
 			Oid relationId = RangeVarGetRelid(createStatement->base.relation,
 											  AccessShareLock, false);
-			Relation relation = heap_open(relationId, AccessExclusiveLock);
+			Relation relation = relation_open(relationId, AccessExclusiveLock);
 
 			/*
 			 * Make sure database directory exists before creating a table.
@@ -250,7 +263,7 @@ cstore_ddl_event_end_trigger(PG_FUNCTION_ARGS)
 			CreateCStoreDatabaseDirectory(MyDatabaseId);
 
 			InitializeCStoreTableFile(relationId, relation);
-			heap_close(relation, AccessExclusiveLock);
+			relation_close(relation, AccessExclusiveLock);
 		}
 	}
 
@@ -265,19 +278,26 @@ cstore_ddl_event_end_trigger(PG_FUNCTION_ARGS)
  * the previous utility hook or the standard utility command via macro
  * CALL_PREVIOUS_UTILITY.
  */
-#if PG_VERSION_NUM >= 100000
+#if PG_VERSION_NUM >= 130000
 static void
 CStoreProcessUtility(PlannedStmt *plannedStatement, const char *queryString,
 					 ProcessUtilityContext context,
 					 ParamListInfo paramListInfo,
 					 QueryEnvironment *queryEnvironment,
-					 DestReceiver *destReceiver, char *completionTag)
-#else
+					 DestReceiver *destReceiver, QueryCompletion *queryCompletion)
+#elif PG_VERSION_NUM >= 100000
 static void
-CStoreProcessUtility(Node * parseTree, const char *queryString,
+CStoreProcessUtility(PlannedStmt * plannedStatement, const char * queryString,
 					 ProcessUtilityContext context,
 					 ParamListInfo paramListInfo,
-					 DestReceiver *destReceiver, char *completionTag)
+					 QueryEnvironment * queryEnvironment,
+					 DestReceiver * destReceiver, char * completionTag)
+#else
+static void
+CStoreProcessUtility(Node * parseTree, const char * queryString,
+					 ProcessUtilityContext context,
+					 ParamListInfo paramListInfo,
+					 DestReceiver * destReceiver, char * completionTag)
 #endif
 {
 #if PG_VERSION_NUM >= 100000
@@ -290,12 +310,25 @@ CStoreProcessUtility(Node * parseTree, const char *queryString,
 
 		if (CopyCStoreTableStatement(copyStatement))
 		{
-			CStoreProcessCopyCommand(copyStatement, queryString, completionTag);
+			uint64 processed =
+				CStoreProcessCopyCommand(copyStatement, queryString);
+
+#if PG_VERSION_NUM >= 130000
+			if (queryCompletion)
+			{
+				SetQueryCompletion(queryCompletion, CMDTAG_COPY, processed);
+			}
+#else
+			if (completionTag != NULL)
+			{
+				snprintf(completionTag, COMPLETION_TAG_BUFSIZE,
+						 "COPY " UINT64_FORMAT, processed);
+			}
+#endif
 		}
 		else
 		{
-			CALL_PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo,
-								  destReceiver, completionTag);
+			CALL_PREVIOUS_UTILITY();
 		}
 	}
 	else if (nodeTag(parseTree) == T_DropStmt)
@@ -326,8 +359,7 @@ CStoreProcessUtility(Node * parseTree, const char *queryString,
 				}
 			}
 
-			CALL_PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo,
-								  destReceiver, completionTag);
+			CALL_PREVIOUS_UTILITY();
 
 			if (removeCStoreDirectory)
 			{
@@ -339,8 +371,7 @@ CStoreProcessUtility(Node * parseTree, const char *queryString,
 			ListCell *fileListCell = NULL;
 			List *droppedTables = DroppedCStoreFilenameList((DropStmt *) parseTree);
 
-			CALL_PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo,
-								  destReceiver, completionTag);
+			CALL_PREVIOUS_UTILITY();
 
 			foreach(fileListCell, droppedTables)
 			{
@@ -363,8 +394,7 @@ CStoreProcessUtility(Node * parseTree, const char *queryString,
 		{
 			truncateStatement->relations = otherTablesList;
 
-			CALL_PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo,
-								  destReceiver, completionTag);
+			CALL_PREVIOUS_UTILITY();
                         /* restore the former relation list. Our
                          * replacement could be freed but still needed
                          * in a cached plan. A truncate can be cached
@@ -377,15 +407,14 @@ CStoreProcessUtility(Node * parseTree, const char *queryString,
 		foreach(cstoreRelationCell, cstoreRelationList)
 		{
 			Relation relation = (Relation) lfirst(cstoreRelationCell);
-			heap_close(relation, AccessExclusiveLock);
+			relation_close(relation, AccessExclusiveLock);
 		}
 	}
 	else if (nodeTag(parseTree) == T_AlterTableStmt)
 	{
 		AlterTableStmt *alterTable = (AlterTableStmt *) parseTree;
 		CStoreProcessAlterTableCommand(alterTable);
-		CALL_PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo,
-							  destReceiver, completionTag);
+		CALL_PREVIOUS_UTILITY();
 	}
 	else if (nodeTag(parseTree) == T_DropdbStmt)
 	{
@@ -394,8 +423,7 @@ CStoreProcessUtility(Node * parseTree, const char *queryString,
 		Oid databaseOid = get_database_oid(dropDdStmt->dbname, missingOk);
 
 		/* let postgres handle error checking and dropping of the database */
-		CALL_PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo,
-							  destReceiver, completionTag);
+		CALL_PREVIOUS_UTILITY();
 
 		if (databaseOid != InvalidOid)
 		{
@@ -405,8 +433,7 @@ CStoreProcessUtility(Node * parseTree, const char *queryString,
 	/* handle other utility statements */
 	else
 	{
-		CALL_PREVIOUS_UTILITY(parseTree, queryString, context, paramListInfo,
-							  destReceiver, completionTag);
+		CALL_PREVIOUS_UTILITY();
 	}
 }
 
@@ -481,10 +508,11 @@ CheckSuperuserPrivilegesForCopy(const CopyStmt* copyStatement)
 /*
  * CStoreProcessCopyCommand handles COPY <cstore_table> FROM/TO ... statements.
  * It determines the copy direction and forwards execution to appropriate function.
+ * 
+ * It returns number of rows processed.
  */
-static void
-CStoreProcessCopyCommand(CopyStmt *copyStatement, const char* queryString,
-						 char *completionTag)
+static uint64
+CStoreProcessCopyCommand(CopyStmt *copyStatement, const char* queryString)
 {
 	uint64 processedCount = 0;
 
@@ -497,11 +525,7 @@ CStoreProcessCopyCommand(CopyStmt *copyStatement, const char* queryString,
 		processedCount = CopyOutCStoreTable(copyStatement, queryString);
 	}
 
-	if (completionTag != NULL)
-	{
-		snprintf(completionTag, COMPLETION_TAG_BUFSIZE, "COPY " UINT64_FORMAT,
-				 processedCount);
-	}
+	return processedCount;
 }
 
 
@@ -537,7 +561,7 @@ CopyIntoCStoreTable(const CopyStmt *copyStatement, const char *queryString)
 	 * Open and lock the relation. We acquire ShareUpdateExclusiveLock to allow
 	 * concurrent reads, but block concurrent writes.
 	 */
-	relation = heap_openrv(copyStatement->relation, ShareUpdateExclusiveLock);
+	relation = relation_openrv(copyStatement->relation, ShareUpdateExclusiveLock);
 	relationId = RelationGetRelid(relation);
 
 	/* allocate column values and nulls arrays */
@@ -612,7 +636,7 @@ CopyIntoCStoreTable(const CopyStmt *copyStatement, const char *queryString)
 	/* end read/write sessions and close the relation */
 	EndCopyFrom(copyState);
 	CStoreEndWrite(writeState);
-	heap_close(relation, ShareUpdateExclusiveLock);
+	relation_close(relation, ShareUpdateExclusiveLock);
 
 	return processedRowCount;
 }
@@ -823,7 +847,7 @@ OpenRelationsForTruncate(List *cstoreTableList)
 	foreach(relationCell, cstoreTableList)
 	{
 		RangeVar *rangeVar = (RangeVar *) lfirst(relationCell);
-		Relation relation = heap_openrv(rangeVar, AccessExclusiveLock);
+		Relation relation = relation_openrv(rangeVar, AccessExclusiveLock);
 		Oid relationId = relation->rd_id;
 		AclResult aclresult = pg_class_aclcheck(relationId, GetUserId(),
 											   ACL_TRUNCATE);
@@ -835,7 +859,7 @@ OpenRelationsForTruncate(List *cstoreTableList)
 		/* check if this relation is repeated */
 		if (list_member_oid(relationIdList, relationId))
 		{
-			heap_close(relation, AccessExclusiveLock);
+			relation_close(relation, AccessExclusiveLock);
 		}
 		else
 		{
@@ -1006,7 +1030,7 @@ DistributedTable(Oid relationId)
 		return false;
 	}
 
-	heapRelation = heap_open(partitionOid, AccessShareLock);
+	heapRelation = relation_open(partitionOid, AccessShareLock);
 
 	ScanKeyInit(&scanKey[0], ATTR_NUM_PARTITION_RELATION_ID, InvalidStrategy,
 				F_OIDEQ, ObjectIdGetDatum(relationId));
@@ -1558,6 +1582,7 @@ CStoreDefaultFilePath(Oid foreignTableId)
 	RelFileNode relationFileNode = relation->rd_node;
 	Oid databaseOid = relationFileNode.dbNode;
 	Oid relationFileOid = relationFileNode.relNode;
+	StringInfo cstoreFilePath = makeStringInfo();
 
 	relation_close(relation, AccessShareLock);
 
@@ -1569,7 +1594,6 @@ CStoreDefaultFilePath(Oid foreignTableId)
 
 	}
 
-	StringInfo cstoreFilePath = makeStringInfo();
 	appendStringInfo(cstoreFilePath, "%s/%s/%u/%u", DataDir, CSTORE_FDW_NAME,
 					 databaseOid, relationFileOid);
 
@@ -1625,7 +1649,7 @@ CStoreGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId
 {
 	Path *foreignScanPath = NULL;
 	CStoreFdwOptions *cstoreFdwOptions = CStoreGetOptions(foreignTableId);
-	Relation relation = heap_open(foreignTableId, AccessShareLock);
+	Relation relation = relation_open(foreignTableId, AccessShareLock);
 
 	/*
 	 * We skip reading columns that are not in query. Here we assume that all
@@ -1692,7 +1716,7 @@ CStoreGetForeignPaths(PlannerInfo *root, RelOptInfo *baserel, Oid foreignTableId
 #endif
 
 	add_path(baserel, foreignScanPath);
-	heap_close(relation, AccessShareLock);
+	relation_close(relation, AccessShareLock);
 }
 
 
@@ -1830,7 +1854,7 @@ ColumnList(RelOptInfo *baserel, Oid foreignTableId)
 	List *restrictInfoList = baserel->baserestrictinfo;
 	ListCell *restrictInfoCell = NULL;
 	const AttrNumber wholeRow = 0;
-	Relation relation = heap_open(foreignTableId, AccessShareLock);
+	Relation relation = relation_open(foreignTableId, AccessShareLock);
 	TupleDesc tupleDescriptor = RelationGetDescr(relation);
 
 	/* first add the columns used in joins and projections */
@@ -1911,7 +1935,7 @@ ColumnList(RelOptInfo *baserel, Oid foreignTableId)
 		}
 	}
 
-	heap_close(relation, AccessShareLock);
+	relation_close(relation, AccessShareLock);
 
 	return columnList;
 }
@@ -2317,7 +2341,7 @@ CStoreBeginForeignInsert(ModifyTableState *modifyTableState, ResultRelInfo *rela
 	Relation relation = NULL;
 
 	foreignTableOid = RelationGetRelid(relationInfo->ri_RelationDesc);
-	relation = heap_open(foreignTableOid, ShareUpdateExclusiveLock);
+	relation = relation_open(foreignTableOid, ShareUpdateExclusiveLock);
 	cstoreFdwOptions = CStoreGetOptions(foreignTableOid);
 	tupleDescriptor = RelationGetDescr(relationInfo->ri_RelationDesc);
 
@@ -2389,7 +2413,7 @@ CStoreEndForeignInsert(EState *executorState, ResultRelInfo *relationInfo)
 		Relation relation = writeState->relation;
 
 		CStoreEndWrite(writeState);
-		heap_close(relation, ShareUpdateExclusiveLock);
+		relation_close(relation, ShareUpdateExclusiveLock);
 	}
 }
 
