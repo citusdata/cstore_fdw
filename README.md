@@ -358,7 +358,7 @@ Changeset
 Copyright
 ---------
 
-Copyright (c) 2017 Citus Data, Inc.
+Copyright (c) Citus Data, Inc.
 
 This module is free software; you can redistribute it and/or modify it under the
 Apache v2.0 License.
