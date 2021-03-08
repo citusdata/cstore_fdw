@@ -7,9 +7,10 @@ Migration is simple, and you'll typically see improved compression thanks to [zs
 ```sql
 -- After adding adding shared_preload_libraries = 'citus'
 -- to postgresql.conf and restarting:
-CREATE EXTENSION citus;
+CREATE EXTENSION IF NOT EXISTS citus;
 
--- Use the columnar access method
+-- Create a table using the columnar access method, with the same columns
+-- as an existing cstore_fdw table
 CREATE TABLE customer_reviews_am (
   LIKE customer_reviews_fdw INCLUDING ALL
 ) USING columnar;
