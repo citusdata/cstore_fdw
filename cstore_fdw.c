@@ -717,7 +717,13 @@ CopyOutCStoreTable(CopyStmt* copyStatement, const char* queryString)
 static void
 CStoreProcessAlterTableCommand(AlterTableStmt *alterStatement)
 {
+
+	#if PG_VERSION_NUM >= 140000
+	ObjectType objectType = alterStatement->objtype;
+	#else
 	ObjectType objectType = alterStatement->relkind;
+	#endif
+	
 	RangeVar *relationRangeVar = alterStatement->relation;
 	Oid relationId = InvalidOid;
 	List *commandList = alterStatement->cmds;
